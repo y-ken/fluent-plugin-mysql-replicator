@@ -1,17 +1,17 @@
-# fluent-plugin-mysql-replicator [![Build Status](https://travis-ci.org/y-ken/fluent-plugin-mysql-repicator.png?branch=master)](https://travis-ci.org/y-ken/fluent-plugin-mysql-repicator)
+# fluent-plugin-mysql-replicator [![Build Status](https://travis-ci.org/y-ken/fluent-plugin-mysql-replicator.png?branch=master)](https://travis-ci.org/y-ken/fluent-plugin-mysql-replicator)
 
 ## Overview
 
-Fluentd input plugin to track insert/update/delete event from MySQL server.
+Fluentd input plugin to track insert/update/delete event from MySQL database server.
 
 ## Installation
 
 `````
 ### native gem
-gem install fluent-plugin-mysql-repicator
+gem install fluent-plugin-mysql-replicator
 
 ### td-agent gem
-/usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-repicator
+/usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-replicator
 `````
 
 ## Tutorial
@@ -38,13 +38,14 @@ gem install fluent-plugin-mysql-repicator
 #### sample query
 
 `````
-$ mysql -uguest replicator -e "create table search_test(id int auto_increment, text text, PRIMARY KEY (id))"
+$ mysql -e "create database myweb"
+$ mysql myweb -e "create table search_test(id int auto_increment, text text, PRIMARY KEY (id))"
 $ sleep 10
-$ mysql -uguest replicator -e "insert into search_test(text) values('aaa')"
+$ mysql myweb -e "insert into search_test(text) values('aaa')"
 $ sleep 10
-$ mysql -uguest replicator -e "update search_test set text='bbb' where text = 'aaa'"
+$ mysql myweb -e "update search_test set text='bbb' where text = 'aaa'"
 $ sleep 10
-$ mysql -uguest replicator -e "delete from search_test where text='bbb'"
+$ mysql myweb -e "delete from search_test where text='bbb'"
 `````
 
 #### result
