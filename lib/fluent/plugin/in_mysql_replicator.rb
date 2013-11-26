@@ -4,7 +4,7 @@ module Fluent
 
     def initialize
       require 'mysql2'
-      require 'digest/sha2'
+      require 'digest/sha1'
       super
     end
 
@@ -46,16 +46,15 @@ module Fluent
       table_hash = Hash.new
       ids = Array.new
       loop do
-        event = {:insert => [], :update => [], :delete => []}
         previous_ids = ids
         current_ids = Array.new
         query(@query).each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           if !table_hash.include?(row[@primary_key])
-            event[:insert] << row 
+            emit_record(:insert, row)
           elsif table_hash[row[@primary_key]] != current_hash
-            event[:update] << row 
+            emit_record(:update, row)
           end
           table_hash[row[@primary_key]] = current_hash
         end
@@ -63,9 +62,8 @@ module Fluent
         deleted_ids = previous_ids - current_ids
         if deleted_ids.count > 0
           hash_delete_by_list(table_hash, deleted_ids)
-          deleted_ids.each {|id| event[:delete] << {@primary_key => id}}
+          deleted_ids.each {|id| emit_record(:delete, {@primary_key => id})}
         end
-        emit_event(event)
         sleep @interval        
       end
     end
@@ -74,13 +72,9 @@ module Fluent
       deleted_keys.each{|k| hash.delete(k)}
     end
 
-    def emit_event(event)
-      event.each do |type,record|
-        tag = "#{@tag}.#{type}"
-        record.each do |message|
-          Engine.emit(tag, Engine.now, message) unless message.empty?
-        end
-      end
+    def emit_record(type, record)
+      tag = "#{@tag}.#{type.to_s}"
+      Engine.emit(tag, Engine.now, record)
     end
 
     def query(query)
