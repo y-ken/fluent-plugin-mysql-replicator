@@ -97,7 +97,9 @@ module Fluent
           :password => @password,
           :database => @database,
           :encoding => @encoding,
-          :reconnect => true
+          :reconnect => true,
+          :stream => true,
+          :cache_rows => false
         })
       rescue Exception => e
         $log.warn "mysql_replicator: #{e}"
