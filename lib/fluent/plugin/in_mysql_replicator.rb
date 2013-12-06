@@ -64,7 +64,7 @@ module Fluent
           hash_delete_by_list(table_hash, deleted_ids)
           deleted_ids.each {|id| emit_record(:delete, {@primary_key => id})}
         end
-        sleep @interval        
+        sleep @interval
       end
     end
 

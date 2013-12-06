@@ -57,6 +57,10 @@ $ tail -f /var/log/td-agent/td-agent.log
 2013-11-25 18:22:45 +0900 replicator.delete: {"id":"1"}
 `````
 
+## Performance
+
+On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
+
 ## TODO
 
 Pull requests are very welcome!!
