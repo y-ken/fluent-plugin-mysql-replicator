@@ -1,11 +1,11 @@
 # -*- encoding: utf-8 -*-
 Gem::Specification.new do |s|
   s.name        = "fluent-plugin-mysql-replicator"
-  s.version     = "0.0.2"
+  s.version     = "0.1.0"
   s.authors     = ["Kentaro Yoshida"]
   s.email       = ["y.ken.studio@gmail.com"]
   s.homepage    = "https://github.com/y-ken/fluent-plugin-mysql-replicator"
-  s.summary     = %q{Fluentd input plugin to track insert/update/delete event from MySQL database server.}
+  s.summary     = %q{Fluentd input plugin to track insert/update/delete event from MySQL databases. It will support multiple table replication to another RDB/noSQL like Elasticsearch.}
 
   s.files         = `git ls-files`.split("\n")
   s.test_files    = `git ls-files -- {test,spec,features}/*`.split("\n")
