@@ -14,7 +14,15 @@ gem install fluent-plugin-mysql-replicator
 /usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-replicator
 `````
 
-## Tutorial
+## Tutorial for Quickstart
+
+It is useful for these purpose.
+
+* try it on this plugin.
+* replicate small record under a millons table.
+
+**Note:**  
+On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
 
 #### configuration
 
@@ -57,9 +65,69 @@ $ tail -f /var/log/td-agent/td-agent.log
 2013-11-25 18:22:45 +0900 replicator.delete: {"id":"1"}
 `````
 
-## Performance
+## Tutorial for Production (Multiple thread for huge tables)
 
-On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
+It is made for supporting a millions of records and/or multiple tables replication.  
+It is storing hash table in mysql management table instead of ruby internal memory.  
+
+#### prepare
+
+* create database and tables.
+* add replicator configuration.
+
+```
+$ cat setup_mysql_replicator_multi.sql
+CREATE DATABASE replicator_manager;
+USE replicator_manager;
+
+CREATE TABLE `hashmap` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `source_name` varchar(255) NOT NULL,
+  `source_query_pk` int(11) NOT NULL,
+  `source_query_hash` varchar(255) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `source_query_pk` (`source_query_pk`,`source_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+CREATE TABLE `source` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(255) NOT NULL,
+  `host` varchar(255) NOT NULL DEFAULT 'localhost',
+  `port` int(11) NOT NULL DEFAULT '3306',
+  `username` varchar(255) NOT NULL,
+  `password` varchar(255) NOT NULL,
+  `database` varchar(255) NOT NULL,
+  `query` TEXT NOT NULL,
+  `interval` int(11) NOT NULL,
+  `tag` varchar(255) NOT NULL,
+  `primary_key` varchar(11) DEFAULT 'id',
+  `enable_delete` int(11) DEFAULT '1',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+```
+
+```
+$ mysql
+mysql> source /path/to/setup_mysql_replicator_multi.sql
+mysql> insert into source ...snip...;
+```
+
+#### configuration
+
+`````
+<source>
+  type mysql_replicator_multi
+  manager_host localhost
+  manager_username your_mysql_user
+  manager_password your_mysql_password
+  manager_database replicator_manager
+</source>
+
+<match replicator.*>
+  type stdout
+</match>
+`````
 
 ## TODO
 

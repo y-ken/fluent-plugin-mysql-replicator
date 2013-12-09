@@ -23,6 +23,7 @@ unless ENV.has_key?('VERBOSE')
 end
 
 require 'fluent/plugin/in_mysql_replicator'
+require 'fluent/plugin/in_mysql_replicator_multi'
 
 class Test::Unit::TestCase
 end
