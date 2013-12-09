@@ -43,7 +43,7 @@ module Fluent
 
     def get_config
       configs = []
-      query = "SELECT * FROM source"
+      query = "SELECT * FROM settings"
       @manager_db.query(query).each do |row|
         configs << row
       end
@@ -57,7 +57,7 @@ module Fluent
         primary_key = config['primary_key']
         previous_id = current_id = 0
         loop do
-          db = get_source_connection(config)
+          db = get_origin_connection(config)
           db.query(config['query']).each do |row|
             current_id = row[primary_key]
             detect_insert_update(config, row)
@@ -87,14 +87,14 @@ module Fluent
       end
       unless event.nil?
         emit_record("#{config['tag']}.#{event.to_s}", row)
-        update_hashmap({:event => event, :ids => current_id, :source_name => config['name'], :hash => current_hash})
+        update_hashtable({:event => event, :ids => current_id, :setting_name => config['name'], :hash => current_hash})
       end
     end
 
-    def get_stored_hash(source_name, id)
-      query = "SELECT source_query_hash FROM hashmap WHERE source_query_pk = #{id.to_i} AND source_name = '#{source_name}'"
+    def get_stored_hash(setting_name, id)
+      query = "SELECT setting_query_hash FROM hash_tables WHERE setting_query_pk = #{id.to_i} AND setting_name = '#{setting_name}'"
       @manager_db.query(query).each do |row|
-        return row['source_query_hash']
+        return row['setting_query_hash']
       end
     end
 
@@ -106,43 +106,43 @@ module Fluent
         deleted_ids.each do |id|
           emit_record("#{config['tag']}.#{event.to_s}", {config['primary_key'] => id})
         end
-        update_hashmap({:event =>  event, :ids => deleted_ids, :source_name => config['name']})
+        update_hashtable({:event =>  event, :ids => deleted_ids, :setting_name => config['name']})
       end
     end
 
-    def collect_gap_ids(source_name, current_id, previous_id)
+    def collect_gap_ids(setting_name, current_id, previous_id)
       if (current_id - previous_id) > 1
-        query = "SELECT source_query_pk FROM replicator.hashmap 
-          WHERE source_name = '#{source_name}' 
-          AND source_query_pk > #{previous_id.to_i} AND source_query_pk < #{current_id.to_i}"
+        query = "SELECT setting_query_pk FROM hash_tables
+          WHERE setting_name = '#{setting_name}' 
+          AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
       elsif previous_id > current_id
-        query = "SELECT source_query_pk FROM replicator.hashmap 
-          WHERE source_name = '#{source_name}' 
-          AND source_query_pk > #{previous_id.to_i}"
+        query = "SELECT setting_query_pk FROM hash_tables
+          WHERE setting_name = '#{setting_name}' 
+          AND setting_query_pk > #{previous_id.to_i}"
       elsif previous_id == current_id
-        query = "SELECT source_query_pk FROM replicator.hashmap 
-          WHERE source_name = '#{source_name}' 
-          AND (source_query_pk > #{current_id.to_i} OR source_query_pk < #{current_id.to_i})"
+        query = "SELECT setting_query_pk FROM hash_tables
+          WHERE setting_name = '#{setting_name}' 
+          AND (setting_query_pk > #{current_id.to_i} OR setting_query_pk < #{current_id.to_i})"
       end
       ids = Array.new
       unless query.nil?
         @manager_db.query(query).each do |row|
-          ids << row['source_query_pk']
+          ids << row['setting_query_pk']
         end
       end
       return ids
     end
 
-    def update_hashmap(opts)
+    def update_hashtable(opts)
       ids = opts[:ids].is_a?(Integer) ? [opts[:ids]] : opts[:ids]
       ids.each do |id|
         case opts[:event]
         when :insert
-          query = "insert into hashmap (source_name,source_query_pk,source_query_hash) values('#{opts[:source_name]}','#{id}','#{opts[:hash]}')"
+          query = "insert into hash_tables (setting_name,setting_query_pk,setting_query_hash) values('#{opts[:setting_name]}','#{id}','#{opts[:hash]}')"
         when :update
-          query = "update hashmap set source_query_hash = '#{opts[:hash]}' WHERE source_name = '#{opts[:source_name]}' AND source_query_pk = '#{id}'"
+          query = "update hash_tables set setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         when :delete
-          query = "delete from hashmap WHERE source_name = '#{opts[:source_name]}' AND source_query_pk = '#{id}'"
+          query = "delete from hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         end
         p query
         @manager_db.query(query) unless query.nil?
@@ -173,7 +173,7 @@ module Fluent
       end
     end
 
-    def get_source_connection(config)
+    def get_origin_connection(config)
       begin
         return Mysql2::Client.new(
           :host => config['host'],

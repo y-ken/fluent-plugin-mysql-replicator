@@ -83,16 +83,16 @@ $ cat setup_mysql_replicator_multi.sql
 CREATE DATABASE replicator_manager;
 USE replicator_manager;
 
-CREATE TABLE `hashmap` (
+CREATE TABLE `hash_tables` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `source_name` varchar(255) NOT NULL,
-  `source_query_pk` int(11) NOT NULL,
-  `source_query_hash` varchar(255) NOT NULL,
+  `setting_name` varchar(255) NOT NULL,
+  `setting_query_pk` int(11) NOT NULL,
+  `setting_query_hash` varchar(255) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `source_query_pk` (`source_query_pk`,`source_name`)
+  UNIQUE KEY `setting_query_pk` (`setting_query_pk`,`setting_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
-CREATE TABLE `source` (
+CREATE TABLE `settings` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `name` varchar(255) NOT NULL,
   `host` varchar(255) NOT NULL DEFAULT 'localhost',
