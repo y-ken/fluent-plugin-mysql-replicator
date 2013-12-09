@@ -65,10 +65,13 @@ $ tail -f /var/log/td-agent/td-agent.log
 2013-11-25 18:22:45 +0900 replicator.delete: {"id":"1"}
 `````
 
-## Tutorial for Production (Multiple thread for huge tables)
+## Tutorial for Production
 
-It is made for supporting a millions of records and/or multiple tables replication.  
-It is storing hash table in mysql management table instead of ruby internal memory.  
+It is very useful to replicate a millions of records and/or multiple tables with multiple threads.  
+This architecture is storing hash table in mysql management table instead of ruby internal memory.  
+
+**Note:**  
+On syncing 300 million rows table, it will consume around 20MB of memory with ruby 1.9.3 environment.
 
 #### prepare
 
