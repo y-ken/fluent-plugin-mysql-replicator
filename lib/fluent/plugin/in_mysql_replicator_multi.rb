@@ -21,9 +21,9 @@ module Fluent
 
     def start
       begin
-        @manager_db = get_manager_connection
         @threads = []
-        get_config.each do |config|
+        @mutex = Mutex.new
+        get_settings.each do |config|
           @threads << Thread.new {
             poll(config)
           }
@@ -41,28 +41,34 @@ module Fluent
       end
     end
 
-    def get_config
-      configs = []
+    def get_settings
+      manager_db = get_manager_connection
+      settings = []
       query = "SELECT * FROM settings"
-      @manager_db.query(query).each do |row|
-        configs << row
+      manager_db.query(query).each do |row|
+        settings << row
       end
-      return configs
+      return settings
     end
 
     def poll(config)
       begin
+        @manager_db = get_manager_connection
         masked_config = config.map {|k,v| (k == 'password') ? v.to_s.gsub(/./, '*') : v}
-        $log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
+        @mutex.synchronize {
+          $log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
+        }
         primary_key = config['primary_key']
         previous_id = current_id = 0
         loop do
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
+            @mutex.lock
             current_id = row[primary_key]
             detect_insert_update(config, row)
             detect_delete(config, current_id, previous_id)
             previous_id = current_id
+            @mutex.unlock
           end
           db.close
           sleep config['interval']
@@ -144,7 +150,6 @@ module Fluent
         when :delete
           query = "delete from hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         end
-        p query
         @manager_db.query(query) unless query.nil?
       end
     end
