@@ -28,11 +28,13 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
       interval        30
       tag             input.mysql
       query           SELECT id, text from search_text
+      enable_delete   no
     ]
     d.instance.inspect
     assert_equal 'localhost', d.instance.host
     assert_equal 3306, d.instance.port
     assert_equal 30, d.instance.interval
     assert_equal 'input.mysql', d.instance.tag
+    assert_equal false, d.instance.enable_delete
   end
 end

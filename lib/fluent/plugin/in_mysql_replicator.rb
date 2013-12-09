@@ -18,6 +18,7 @@ module Fluent
     config_param :tag, :string
     config_param :query, :string
     config_param :primary_key, :string, :default => 'id'
+    config_param :enable_delete, :bool, :default => 'yes'
 
     def configure(conf)
       super
@@ -59,10 +60,12 @@ module Fluent
           table_hash[row[@primary_key]] = current_hash
         end
         ids = current_ids
-        deleted_ids = previous_ids - current_ids
-        if deleted_ids.count > 0
-          hash_delete_by_list(table_hash, deleted_ids)
-          deleted_ids.each {|id| emit_record(:delete, {@primary_key => id})}
+        unless @enable_delete
+          deleted_ids = previous_ids - current_ids
+          if deleted_ids.count > 0
+            hash_delete_by_list(table_hash, deleted_ids)
+            deleted_ids.each {|id| emit_record(:delete, {@primary_key => id})}
+          end
         end
         sleep @interval
       end
