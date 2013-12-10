@@ -52,6 +52,7 @@ module Fluent
         query(@query).each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
+          row.each {|k, v| row[k] = v.to_s if v.is_a? Time}
           if !table_hash.include?(row[@primary_key])
             emit_record(:insert, row)
           elsif table_hash[row[@primary_key]] != current_hash

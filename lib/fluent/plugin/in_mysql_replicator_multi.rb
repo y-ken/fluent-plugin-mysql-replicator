@@ -64,6 +64,7 @@ module Fluent
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
             @mutex.lock
+            row.each {|k, v| row[k] = v.to_s if v.is_a? Time}
             current_id = row[primary_key]
             detect_insert_update(config, row)
             detect_delete(config, current_id, previous_id)
