@@ -12,6 +12,7 @@ CREATE TABLE `hash_tables` (
 
 CREATE TABLE `settings` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `is_active` int(11) NOT NULL DEFAULT '1',
   `name` varchar(255) NOT NULL,
   `host` varchar(255) NOT NULL DEFAULT 'localhost',
   `port` int(11) NOT NULL DEFAULT '3306',

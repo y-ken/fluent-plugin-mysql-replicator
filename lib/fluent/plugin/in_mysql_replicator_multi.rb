@@ -44,7 +44,7 @@ module Fluent
     def get_settings
       manager_db = get_manager_connection
       settings = []
-      query = "SELECT * FROM settings"
+      query = "SELECT * FROM settings WHERE is_active = 1;"
       manager_db.query(query).each do |row|
         settings << row
       end
