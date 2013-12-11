@@ -36,6 +36,10 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
   interval 5s
   tag replicator
   query SELECT id, text from search_test
+  # Format output tag for each events. Placeholders usage as described below.
+  tag replicator.myweb.search_test.${event}.${primary_key}
+  # ${event} : the variation of row event type by insert/update/delete.
+  # ${primary_key} : the value of `replicator_manager.settings.primary_key` in manager table.
 </source>
 
 <match replicator.*>

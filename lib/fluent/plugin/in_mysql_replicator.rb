@@ -15,15 +15,19 @@ module Fluent
     config_param :database, :string, :default => nil
     config_param :encoding, :string, :default => 'utf8'
     config_param :interval, :string, :default => '1m'
-    config_param :tag, :string
     config_param :query, :string
     config_param :primary_key, :string, :default => 'id'
     config_param :enable_delete, :bool, :default => 'yes'
+    config_param :tag, :string, :default => nil
 
     def configure(conf)
       super
       @interval = Config.time_value(@interval)
       $log.info "adding mysql_replicator job: [#{@query}] interval: #{@interval}sec"
+
+      if @tag.nil?
+        raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
+      end
     end
 
     def start
@@ -54,9 +58,11 @@ module Fluent
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a? Time}
           if !table_hash.include?(row[@primary_key])
-            emit_record(:insert, row)
+            tag = format_tag(@tag, {:event => :insert})
+            emit_record(tag, row)
           elsif table_hash[row[@primary_key]] != current_hash
-            emit_record(:update, row)
+            tag = format_tag(@tag, {:event => :update})
+            emit_record(tag, row)
           end
           table_hash[row[@primary_key]] = current_hash
         end
@@ -65,7 +71,10 @@ module Fluent
           deleted_ids = previous_ids - current_ids
           if deleted_ids.count > 0
             hash_delete_by_list(table_hash, deleted_ids)
-            deleted_ids.each {|id| emit_record(:delete, {@primary_key => id})}
+            deleted_ids.each do |id| 
+              tag = format_tag(@tag, {:event => :delete})
+              emit_record(tag, {@primary_key => id})
+            end
           end
         end
         sleep @interval
@@ -76,8 +85,15 @@ module Fluent
       deleted_keys.each{|k| hash.delete(k)}
     end
 
-    def emit_record(type, record)
-      tag = "#{@tag}.#{type.to_s}"
+    def format_tag(tag, param)
+      pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key}
+      tag.gsub(/\${[a-z_]+(\[[0-9]+\])?}/, pattern) do
+        $log.warn "mysql_replicator: missing placeholder. tag:#{tag} placeholder:#{$1}" unless pattern.include?($1)
+        pattern[$1]
+      end
+    end
+
+    def emit_record(tag, record)
       Engine.emit(tag, Engine.now, record)
     end
 
