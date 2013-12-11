@@ -39,7 +39,7 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
   # Set replicate query configuration.
   query SELECT id, text, updated_at from search_test;
   primary_key id # specify unique key (default: id)
-  interval 5s  # execute query interval (default: 1m)
+  interval 10s  # execute query interval (default: 1m)
 
   # Enable detect deletion event not only insert/update events. (default: yes)
   # It is useful to use `enable_delete no` that keep following recently updated record with this query.
@@ -74,9 +74,9 @@ $ mysql myweb -e "delete from search_test where text='bbb'"
 
 `````
 $ tail -f /var/log/td-agent/td-agent.log
-2013-11-25 18:22:25 +0900 replicator.insert: {"id":"1","text":"aaa"}
-2013-11-25 18:22:35 +0900 replicator.update: {"id":"1","text":"bbb"}
-2013-11-25 18:22:45 +0900 replicator.delete: {"id":"1"}
+2013-11-25 18:22:25 +0900 replicator.insert.id: {"id":"1","text":"aaa"}
+2013-11-25 18:22:35 +0900 replicator.update.id: {"id":"1","text":"bbb"}
+2013-11-25 18:22:45 +0900 replicator.delete.id: {"id":"1"}
 `````
 
 ## Tutorial for Production
