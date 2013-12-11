@@ -21,7 +21,6 @@ CREATE TABLE `settings` (
   `database` varchar(255) NOT NULL,
   `query` TEXT NOT NULL,
   `interval` int(11) NOT NULL,
-  `tag` varchar(255) NOT NULL,
   `primary_key` varchar(11) DEFAULT 'id',
   `enable_delete` int(11) DEFAULT '1',
   PRIMARY KEY (`id`),

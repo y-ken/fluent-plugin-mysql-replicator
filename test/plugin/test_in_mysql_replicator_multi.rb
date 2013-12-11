@@ -10,6 +10,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     manager_port      3306
     manager_username  foo
     manager_password  bar
+    tag               replicator.${name}.${event}.${primary_key}
   ]
 
   def create_driver(conf=CONFIG,tag='test')
@@ -17,6 +18,9 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   end
 
   def test_configure
+    assert_raise(Fluent::ConfigError) {
+      d = create_driver('')
+    }
     d = create_driver(CONFIG)
     d.instance.inspect
     assert_equal 'localhost', d.instance.manager_host

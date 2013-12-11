@@ -13,10 +13,14 @@ module Fluent
     config_param :manager_username, :string, :default => nil
     config_param :manager_password, :string, :default => ''
     config_param :manager_database, :string, :default => 'replicator_manager'
+    config_param :tag, :string, :default => nil
 
     def configure(conf)
       super
       @reconnect_interval = Config.time_value('10sec')
+      if @tag.nil?
+        raise Fluent::ConfigError, "mysql_replicator_multi: missing 'tag' parameter. Please add following line into config like 'tag replicator.${name}.${event}.${primary_key}'"
+      end
     end
 
     def start
@@ -93,7 +97,8 @@ module Fluent
         event = :update
       end
       unless event.nil?
-        emit_record("#{config['tag']}.#{event.to_s}", row)
+        tag = format_tag(@tag, {:name => config['name'], :event => event, :primary_key => config['primary_key']})
+        emit_record(tag, row)
         update_hashtable({:event => event, :ids => current_id, :setting_name => config['name'], :hash => current_hash})
       end
     end
@@ -111,7 +116,8 @@ module Fluent
       unless deleted_ids.empty?
         event = :delete
         deleted_ids.each do |id|
-          emit_record("#{config['tag']}.#{event.to_s}", {config['primary_key'] => id})
+          tag = format_tag(@tag, {:name => config['name'], :event => event, :primary_key => config['primary_key']})
+          emit_record(tag, {config['primary_key'] => id})
         end
         update_hashtable({:event =>  event, :ids => deleted_ids, :setting_name => config['name']})
       end
@@ -152,6 +158,14 @@ module Fluent
           query = "delete from hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         end
         @manager_db.query(query) unless query.nil?
+      end
+    end
+
+    def format_tag(tag, param)
+      pattern = {'${name}' => param[:name], '${event}' => param[:event].to_s, '${primary_key}' => param[:primary_key]}
+      tag.gsub(/\${[a-z_]+(\[[0-9]+\])?}/, pattern) do
+        $log.warn "mysql_replicator_multi: missing placeholder. tag:#{tag} placeholder:#{$1}" unless pattern.include?($1)
+        pattern[$1]
       end
     end
 

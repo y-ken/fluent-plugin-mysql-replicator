@@ -94,6 +94,7 @@ CREATE TABLE `hash_tables` (
 
 CREATE TABLE `settings` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
+  `is_active` int(11) NOT NULL DEFAULT '1',
   `name` varchar(255) NOT NULL,
   `host` varchar(255) NOT NULL DEFAULT 'localhost',
   `port` int(11) NOT NULL DEFAULT '3306',
@@ -102,7 +103,6 @@ CREATE TABLE `settings` (
   `database` varchar(255) NOT NULL,
   `query` TEXT NOT NULL,
   `interval` int(11) NOT NULL,
-  `tag` varchar(255) NOT NULL,
   `primary_key` varchar(11) DEFAULT 'id',
   `enable_delete` int(11) DEFAULT '1',
   PRIMARY KEY (`id`),
@@ -121,18 +121,29 @@ mysql> insert into source ...snip...;
 `````
 <source>
   type mysql_replicator_multi
+
+  # Database connection setting for manager table.
   manager_host localhost
   manager_username your_mysql_user
   manager_password your_mysql_password
   manager_database replicator_manager
+
+  # Format output tag for each events. Placeholders usage as described below.
+  tag replicator.${name}.${event}.${primary_key}
+  # ${name} : the value of `replicator_manager.settings.name` in manager table.
+  # ${event} : the variation of row event type by insert/update/delete.
+  # ${primary_key} : the value of `replicator_manager.settings.primary_key` in manager table.
 </source>
 
-<match replicator.*>
+<match replicator.**>
   type stdout
 </match>
 `````
 
 ## TODO
+
+* support string type primary_key.
+* support reload setting on demand.
 
 Pull requests are very welcome!!
 
