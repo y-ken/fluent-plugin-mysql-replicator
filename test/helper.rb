@@ -24,6 +24,7 @@ end
 
 require 'fluent/plugin/in_mysql_replicator'
 require 'fluent/plugin/in_mysql_replicator_multi'
+require 'fluent/plugin/out_mysql_replicator_elasticsearch'
 
 class Test::Unit::TestCase
 end
