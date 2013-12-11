@@ -29,13 +29,23 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
 `````
 <source>
   type mysql_replicator
+
+  # Set connection settings for replicate source.
   host localhost
   username your_mysql_user
   password your_mysql_password
   database myweb
-  interval 5s
-  tag replicator
-  query SELECT id, text from search_test
+
+  # Set replicate query configuration.
+  query SELECT id, text, updated_at from search_test;
+  primary_key id # specify unique key (default: id)
+  interval 5s  # execute query interval (default: 1m)
+
+  # Enable detect deletion event not only insert/update events. (default: yes)
+  # It is useful to use `enable_delete no` that keep following recently updated record with this query.
+  # `SELECT * FROM search_test WHERE DATE_ADD(updated_at, INTERVAL 5 MINUTE) > NOW();`
+  enable_delete yes
+
   # Format output tag for each events. Placeholders usage as described below.
   tag replicator.myweb.search_test.${event}.${primary_key}
   # ${event} : the variation of row event type by insert/update/delete.
@@ -146,10 +156,11 @@ mysql> insert into source ...snip...;
 
 ## TODO
 
-* support string type primary_key.
-* support reload setting on demand.
+Pull requests are very welcome like below!!
 
-Pull requests are very welcome!!
+* more tests.
+* support string type of primary_key.
+* support reload setting on demand.
 
 ## Copyright
 

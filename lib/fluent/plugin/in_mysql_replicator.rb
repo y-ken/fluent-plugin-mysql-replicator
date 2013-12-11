@@ -14,20 +14,21 @@ module Fluent
     config_param :password, :string, :default => nil
     config_param :database, :string, :default => nil
     config_param :encoding, :string, :default => 'utf8'
-    config_param :interval, :string, :default => '1m'
     config_param :query, :string
     config_param :primary_key, :string, :default => 'id'
-    config_param :enable_delete, :bool, :default => 'yes'
+    config_param :interval, :string, :default => '1m'
+    config_param :enable_delete, :bool, :default => true
     config_param :tag, :string, :default => nil
 
     def configure(conf)
       super
       @interval = Config.time_value(@interval)
-      $log.info "adding mysql_replicator job: [#{@query}] interval: #{@interval}sec"
 
       if @tag.nil?
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
       end
+
+      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>[#{@query}] :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
     end
 
     def start
@@ -67,7 +68,7 @@ module Fluent
           table_hash[row[@primary_key]] = current_hash
         end
         ids = current_ids
-        unless @enable_delete
+        if @enable_delete
           deleted_ids = previous_ids - current_ids
           if deleted_ids.count > 0
             hash_delete_by_list(table_hash, deleted_ids)
@@ -100,7 +101,7 @@ module Fluent
     def query(query)
       @mysql ||= get_connection
       begin
-        return @mysql.query(query, :cast => false, :cache_rows => false)
+        return @mysql.query(query)
       rescue Exception => e
         $log.warn "mysql_replicator: #{e}"
         sleep @interval
