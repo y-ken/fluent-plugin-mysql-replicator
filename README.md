@@ -2,7 +2,9 @@
 
 ## Overview
 
-Fluentd input plugin to track insert/update/delete event from MySQL database server.
+Fluentd input plugin to track insert/update/delete event from MySQL database server.  
+Not only that, it could multiple table replication into Elasticsearch nodes.  
+It's comming support replicate to another RDB/noSQL.
 
 ## Installation
 
@@ -24,7 +26,7 @@ It is useful for these purpose.
 **Note:**  
 On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
 
-#### configuration
+### configuration
 
 `````
 <source>
@@ -53,11 +55,27 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
 </source>
 
 <match replicator.*>
-  type stdout
+  type copy
+  <store>
+    type stdout
+  </store>
+  <store>
+    type mysql_replicator_elasticsearch
+
+    # Set Elasticsearch connection.
+    host localhost
+    port 9200
+
+    # Set Elasticsearch index, type, and unique id (primary_key) from tag.
+    tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
+
+    # Set frequency of sending bulk request to Elasticsearch node.
+    flush_interval 5s
+  </store>
 </match>
 `````
 
-#### sample query
+### sample query
 
 `````
 $ mysql -e "create database myweb"
@@ -70,7 +88,7 @@ $ sleep 10
 $ mysql myweb -e "delete from search_test where text='bbb'"
 `````
 
-#### result
+### result
 
 `````
 $ tail -f /var/log/td-agent/td-agent.log
@@ -87,10 +105,14 @@ This architecture is storing hash table in mysql management table instead of rub
 **Note:**  
 On syncing 300 million rows table, it will consume around 20MB of memory with ruby 1.9.3 environment.
 
-#### prepare
+### prepare
+
+It has done with follwing two steps.
 
 * create database and tables.
 * add replicator configuration.
+
+##### create database and tables.
 
 ```
 $ cat setup_mysql_replicator_multi.sql
@@ -124,13 +146,28 @@ CREATE TABLE `settings` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 ```
 
+##### add replicator configuration.
+
 ```
-$ mysql
+$ mysql -umysqluser -p
+
+-- For the first time, load schema.
 mysql> source /path/to/setup_mysql_replicator_multi.sql
-mysql> insert into source ...snip...;
+
+-- Add replicate source connection and query settings like below.
+mysql> INSERT INTO `settings`
+  (`id`, `is_active`, `name`, `host`, `port`, `username`, `password`, `database`, `query`, `interval`, `primary_key`, `enable_delete`)
+VALUES
+  (NULL, 1, 'mydb.mytable', '192.168.100.221', 3306, 'mysqluser', 'mysqlpassword', 'mydb', 'SELECT id, text from mytable;', 5, 'id', 1);
 ```
 
-#### configuration
+it is a sample which you have inserted row.
+
+| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete |
+|----|-----------|--------------|-----------------|------|-----------|---------------|----------|------------------------------|----------|-------------|---------------|
+|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |
+
+### configuration
 
 `````
 <source>
@@ -150,7 +187,17 @@ mysql> insert into source ...snip...;
 </source>
 
 <match replicator.**>
-  type stdout
+  type mysql_replicator_elasticsearch
+
+  # Set Elasticsearch connection.
+  host localhost
+  port 9200
+
+  # Set Elasticsearch index, type, and unique id (primary_key) from tag.
+  tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
+
+  # Set frequency of sending bulk request to Elasticsearch node.
+  flush_interval 5s
 </match>
 `````
 

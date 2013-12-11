@@ -18,7 +18,9 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
     super
 
     if @tag_format.nil? || @tag_format == DEFAULT_TAG_FORMAT
-      @tag_format = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
+      @tag_format = DEFAULT_TAG_FORMAT
+    else
+      @tag_format = Regexp.new(conf['tag_format'])
     end
   end
 
