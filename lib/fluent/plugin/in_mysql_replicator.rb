@@ -69,7 +69,11 @@ module Fluent
         end
         ids = current_ids
         if @enable_delete
-          deleted_ids = previous_ids - current_ids
+          if previous_ids.empty?
+            deleted_ids = [*1...current_ids.max] - current_ids
+          else
+            deleted_ids = previous_ids - current_ids
+          end
           if deleted_ids.count > 0
             hash_delete_by_list(table_hash, deleted_ids)
             deleted_ids.each do |id| 
