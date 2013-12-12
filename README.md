@@ -20,7 +20,7 @@ gem install fluent-plugin-mysql-replicator
 
 It is useful for these purpose.
 
-* try it on this plugin.
+* try it on this plugin quickly.
 * replicate small record under a millons table.
 
 **Note:**  
@@ -71,6 +71,9 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
 
     # Set frequency of sending bulk request to Elasticsearch node.
     flush_interval 5s
+    
+    # Queued chunks are flushed at shutdown process.
+    flush_at_shutdown yes
   </store>
 </match>
 `````
@@ -198,6 +201,9 @@ it is a sample which you have inserted row.
 
   # Set frequency of sending bulk request to Elasticsearch node.
   flush_interval 5s
+  
+  # Queued chunks are flushed at shutdown process.
+  flush_at_shutdown yes
 </match>
 `````
 
