@@ -65,6 +65,7 @@ module Fluent
         primary_key = config['primary_key']
         previous_id = current_id = 0
         loop do
+          start_time = Time.now
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
             @mutex.lock
@@ -76,6 +77,8 @@ module Fluent
             @mutex.unlock
           end
           db.close
+          elapsed_time = sprintf("%0.02f", (Time.now - start_time) % 60)
+          $log.info "mysql_replicator_multi: finished execution :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} seconds"
           sleep config['interval']
         end
       rescue StandardError => e

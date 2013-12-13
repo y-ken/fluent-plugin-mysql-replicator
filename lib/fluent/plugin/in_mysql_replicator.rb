@@ -53,6 +53,7 @@ module Fluent
       table_hash = Hash.new
       ids = Array.new
       loop do
+        start_time = Time.now
         previous_ids = ids
         current_ids = Array.new
         query(@query).each do |row|
@@ -83,6 +84,8 @@ module Fluent
             end
           end
         end
+        elapsed_time = sprintf("%0.02f", (Time.now - start_time) % 60)
+        $log.info "mysql_replicator: finished execution :tag=>#{tag} :elapsed_time=>#{elapsed_time} seconds"
         sleep @interval
       end
     end
