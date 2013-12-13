@@ -16,7 +16,13 @@ gem install fluent-plugin-mysql-replicator
 /usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-replicator
 `````
 
-## Tutorial for Quickstart
+## Included Plugins
+
+* Input Plugin: mysql_replicator
+* Input Plugin: mysql_replicator_multi
+* Output Plugin: mysql_replicator_elasticsearch
+
+## Tutorial for Quickstart (mysql_replicator)
 
 It is useful for these purpose.
 
@@ -95,12 +101,12 @@ $ mysql myweb -e "delete from search_test where text='bbb'"
 
 `````
 $ tail -f /var/log/td-agent/td-agent.log
-2013-11-25 18:22:25 +0900 replicator.insert.id: {"id":"1","text":"aaa"}
-2013-11-25 18:22:35 +0900 replicator.update.id: {"id":"1","text":"bbb"}
-2013-11-25 18:22:45 +0900 replicator.delete.id: {"id":"1"}
+2013-11-25 18:22:25 +0900 replicator.myweb.search_test.insert.id: {"id":"1","text":"aaa"}
+2013-11-25 18:22:35 +0900 replicator.myweb.search_test.update.id: {"id":"1","text":"bbb"}
+2013-11-25 18:22:45 +0900 replicator.myweb.search_test.delete.id: {"id":"1"}
 `````
 
-## Tutorial for Production
+## Tutorial for Production (mysql_replicator_multi)
 
 It is very useful to replicate a millions of records and/or multiple tables with multiple threads.  
 This architecture is storing hash table in mysql management table instead of ruby internal memory.  
