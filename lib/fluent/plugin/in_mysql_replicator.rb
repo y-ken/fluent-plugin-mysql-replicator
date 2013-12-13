@@ -59,7 +59,7 @@ module Fluent
         query(@query).each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
-          row.each {|k, v| row[k] = v.to_s if v.is_a? Time}
+          row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
           if !table_hash.include?(row[@primary_key])
             tag = format_tag(@tag, {:event => :insert})
             emit_record(tag, row)
