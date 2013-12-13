@@ -79,8 +79,11 @@ module Fluent
           sleep config['interval']
         end
       rescue StandardError => e
-        $log.error "error: #{e.message}"
-        $log.error e.backtrace.join("\n")
+        @mutex.synchronize {
+          $log.error "mysql_replicator_multi: failed to execute query. :config=>#{masked_config}"
+          $log.error "error: #{e.message}"
+          $log.error e.backtrace.join("\n")
+        }
       end
     end
 

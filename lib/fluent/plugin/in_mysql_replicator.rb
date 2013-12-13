@@ -43,6 +43,7 @@ module Fluent
       begin
         poll
       rescue StandardError => e
+        $log.error "mysql_replicator: failed to execute query."
         $log.error "error: #{e.message}"
         $log.error e.backtrace.join("\n")
       end
