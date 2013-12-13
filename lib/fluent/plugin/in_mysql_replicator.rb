@@ -101,7 +101,7 @@ module Fluent
     def format_tag(tag, param)
       pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key}
       tag.gsub(/\${[a-z_]+(\[[0-9]+\])?}/, pattern) do
-        $log.warn "mysql_replicator: missing placeholder. tag:#{tag} placeholder:#{$1}" unless pattern.include?($1)
+        $log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
     end
