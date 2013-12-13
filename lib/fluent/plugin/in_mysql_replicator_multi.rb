@@ -71,6 +71,11 @@ module Fluent
             @mutex.lock
             row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
             current_id = row[primary_key]
+            if row[primary_key].nil?
+              $log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
+              @mutex.unlock
+              break
+            end
             detect_insert_update(config, row)
             detect_delete(config, current_id, previous_id)
             previous_id = current_id
