@@ -77,7 +77,7 @@ module Fluent
             @mutex.unlock
           end
           db.close
-          elapsed_time = sprintf("%0.02f", (Time.now - start_time) % 60)
+          elapsed_time = sprintf("%0.02f", Time.now - start_time)
           $log.info "mysql_replicator_multi: finished execution :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} seconds"
           sleep config['interval']
         end

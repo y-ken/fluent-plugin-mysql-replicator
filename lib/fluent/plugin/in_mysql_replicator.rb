@@ -84,7 +84,7 @@ module Fluent
             end
           end
         end
-        elapsed_time = sprintf("%0.02f", (Time.now - start_time) % 60)
+        elapsed_time = sprintf("%0.02f", Time.now - start_time)
         $log.info "mysql_replicator: finished execution :tag=>#{tag} :elapsed_time=>#{elapsed_time} seconds"
         sleep @interval
       end
