@@ -21,6 +21,7 @@ gem install fluent-plugin-mysql-replicator
 * Input Plugin: mysql_replicator
 * Input Plugin: mysql_replicator_multi
 * Output Plugin: mysql_replicator_elasticsearch
+* Output Plugin: mysql_replicator_solr (experimental)
 
 ## Tutorial for Quickstart (mysql_replicator)
 
