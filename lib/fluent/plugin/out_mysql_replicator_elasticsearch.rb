@@ -8,7 +8,7 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
   config_param :port, :integer, :default => 9200
   config_param :tag_format, :string, :default => nil
 
-  DEFAULT_TAG_FORMAT = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
+  DEFAULT_TAG_FORMAT = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
 
   def initialize
     super

@@ -73,7 +73,7 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
     port 9200
 
     # Set Elasticsearch index, type, and unique id (primary_key) from tag.
-    tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
+    tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
     # Set frequency of sending bulk request to Elasticsearch node.
     flush_interval 5s
@@ -203,7 +203,7 @@ it is a sample which you have inserted row.
   port 9200
 
   # Set Elasticsearch index, type, and unique id (primary_key) from tag.
-  tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+).(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
+  tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
   # Set frequency of sending bulk request to Elasticsearch node.
   flush_interval 5s
