@@ -38,6 +38,7 @@ It is a guide to replicate single mysql table to solr.
   port 8983
 
   # Set Solr core name and unique id (primary_key) from tag.
+  # On this case, solr url will be http://localhost:8983/solr/${core_name}
   tag_format (?<core_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
   # Set frequency of sending bulk request to Solr.
@@ -48,7 +49,8 @@ It is a guide to replicate single mysql table to solr.
 </match>
 ```
 
-When you use default core (won't specify), change the value of `tag_format` like below.
+When you use default core (won't specify), change the value of `tag_format` like below.  
+On this case, the solr url will be set `http://localhost:8983/solr`
 
 ```
 <match replicator.**>
@@ -59,6 +61,7 @@ When you use default core (won't specify), change the value of `tag_format` like
   port 8983
 
   # Set Solr core name and unique id (primary_key) from tag.
+  # On this case, solr url will be http://localhost:8983/solr/
   tag_format (?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
   # Set frequency of sending bulk request to Solr.

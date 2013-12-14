@@ -31,16 +31,16 @@ It is a guide to replicate single mysql table to elasticsearch.
 </source>
 
 <match replicator.**>
-  type mysql_replicator_solr
+  type mysql_replicator_elasticsearch
 
-  # Set Solr connection.
+  # Set Elasticsearch connection.
   host localhost
-  port 8983
+  port 9200
 
-  # Set Solr core name and unique id (primary_key) from tag.
+  # Set Elasticsearch index, type, and unique id (primary_key) from tag.
   tag_format (?<core_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
-  # Set frequency of sending bulk request to Solr.
+  # Set frequency of sending bulk request to Elasticsearch node.
   flush_interval 5s
 
   # Queued chunks are flushed at shutdown process.
