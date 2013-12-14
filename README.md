@@ -16,12 +16,43 @@ gem install fluent-plugin-mysql-replicator
 /usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-replicator
 `````
 
-## Included Plugins
+## Included plugins
 
 * Input Plugin: mysql_replicator
 * Input Plugin: mysql_replicator_multi
 * Output Plugin: mysql_replicator_elasticsearch
 * Output Plugin: mysql_replicator_solr (experimental)
+
+## Output example
+
+It is a example when detecting insert/update/delete events.
+
+### sample query
+
+`````
+$ mysql -e "create database myweb"
+$ mysql myweb -e "create table search_test(id int auto_increment, text text, PRIMARY KEY (id))"
+$ sleep 10
+$ mysql myweb -e "insert into search_test(text) values('aaa')"
+$ sleep 10
+$ mysql myweb -e "update search_test set text='bbb' where text = 'aaa'"
+$ sleep 10
+$ mysql myweb -e "delete from search_test where text='bbb'"
+`````
+
+### result
+
+`````
+$ tail -f /var/log/td-agent/td-agent.log
+2013-11-25 18:22:25 +0900 replicator.myweb.search_test.insert.id: {"id":"1","text":"aaa"}
+2013-11-25 18:22:35 +0900 replicator.myweb.search_test.update.id: {"id":"1","text":"bbb"}
+2013-11-25 18:22:45 +0900 replicator.myweb.search_test.delete.id: {"id":"1"}
+`````
+
+## Configuration Examples
+
+* [mysql_single_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)* [mysql_multi_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)* [mysql_single_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)
+* [mysql_multi_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)
 
 ## Tutorial for Quickstart (mysql_replicator)
 
@@ -83,28 +114,6 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
     flush_at_shutdown yes
   </store>
 </match>
-`````
-
-### sample query
-
-`````
-$ mysql -e "create database myweb"
-$ mysql myweb -e "create table search_test(id int auto_increment, text text, PRIMARY KEY (id))"
-$ sleep 10
-$ mysql myweb -e "insert into search_test(text) values('aaa')"
-$ sleep 10
-$ mysql myweb -e "update search_test set text='bbb' where text = 'aaa'"
-$ sleep 10
-$ mysql myweb -e "delete from search_test where text='bbb'"
-`````
-
-### result
-
-`````
-$ tail -f /var/log/td-agent/td-agent.log
-2013-11-25 18:22:25 +0900 replicator.myweb.search_test.insert.id: {"id":"1","text":"aaa"}
-2013-11-25 18:22:35 +0900 replicator.myweb.search_test.update.id: {"id":"1","text":"bbb"}
-2013-11-25 18:22:45 +0900 replicator.myweb.search_test.delete.id: {"id":"1"}
 `````
 
 ## Tutorial for Production (mysql_replicator_multi)
