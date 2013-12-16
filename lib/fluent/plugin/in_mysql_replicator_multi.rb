@@ -118,7 +118,7 @@ module Fluent
       unless event.nil?
         tag = format_tag(@tag, {:name => config['name'], :event => event, :primary_key => config['primary_key']})
         emit_record(tag, row)
-        update_hashtable({:event => event, :ids => current_id, :setting_name => config['name'], :hash => current_hash})
+        update_hashtable({:event => event, :id => current_id, :setting_name => config['name'], :hash => current_hash})
       end
     end
 
@@ -166,18 +166,15 @@ module Fluent
     end
 
     def update_hashtable(opts)
-      ids = opts[:ids].is_a?(Integer) ? [opts[:ids]] : opts[:ids]
-      ids.each do |id|
-        case opts[:event]
-        when :insert
-          add_hash_table_buffer(opts[:setting_name], id, opts[:hash])
-        when :update
-          query = "UPDATE hash_tables SET setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
-        when :delete
-          query = "DELETE FROM hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
-        end
-        @manager_db.query(query) unless query.nil?
+      case opts[:event]
+      when :insert
+        add_hash_table_buffer(opts[:setting_name], opts[:id], opts[:hash])
+      when :update
+        query = "UPDATE hash_tables SET setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{opts[:id]}'"
+      when :delete
+        query = "DELETE FROM hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk IN(#{opts[:ids].join(',')})"
       end
+      @manager_db.query(query) unless query.nil?
     end
 
     def format_tag(tag, param)
