@@ -115,7 +115,7 @@ module Fluent
     end
 
     def get_stored_hash(setting_name, id)
-      query = "SELECT setting_query_hash FROM hash_tables WHERE setting_query_pk = #{id.to_i} AND setting_name = '#{setting_name}'"
+      query = "SELECT SQL_NO_CACHE setting_query_hash FROM hash_tables WHERE setting_query_pk = #{id.to_i} AND setting_name = '#{setting_name}'"
       @manager_db.query(query).each do |row|
         return row['setting_query_hash']
       end
@@ -136,15 +136,15 @@ module Fluent
 
     def collect_gap_ids(setting_name, current_id, previous_id)
       if (current_id - previous_id) > 1
-        query = "SELECT setting_query_pk FROM hash_tables
+        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}' 
           AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
       elsif previous_id > current_id
-        query = "SELECT setting_query_pk FROM hash_tables
+        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}' 
           AND setting_query_pk > #{previous_id.to_i}"
       elsif previous_id == current_id
-        query = "SELECT setting_query_pk FROM hash_tables
+        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}' 
           AND (setting_query_pk > #{current_id.to_i} OR setting_query_pk < #{current_id.to_i})"
       end
