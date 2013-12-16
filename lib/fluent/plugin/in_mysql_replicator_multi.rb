@@ -58,7 +58,7 @@ module Fluent
     def poll(config)
       begin
         @manager_db = get_manager_connection
-        masked_config = config.map {|k,v| (k == 'password') ? v.to_s.gsub(/./, '*') : v}
+        masked_config = Hash[config.map {|k,v| (k == 'password') ? [k, v.to_s.gsub(/./, '*')] : [k,v]}]
         @mutex.synchronize {
           $log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
         }
@@ -83,7 +83,7 @@ module Fluent
           end
           db.close
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
-          $log.info "mysql_replicator_multi: finished execution :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} seconds"
+          $log.info "mysql_replicator_multi: finished execution :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} sec"
           sleep config['interval']
         end
       rescue StandardError => e

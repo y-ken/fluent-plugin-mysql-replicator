@@ -28,7 +28,7 @@ module Fluent
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
       end
 
-      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>[#{@query}] :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
+      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
     end
 
     def start
@@ -89,7 +89,7 @@ module Fluent
           end
         end
         elapsed_time = sprintf("%0.02f", Time.now - start_time)
-        $log.info "mysql_replicator: finished execution :tag=>#{tag} :elapsed_time=>#{elapsed_time} seconds"
+        $log.info "mysql_replicator: finished execution :tag=>#{tag} :elapsed_time=>#{elapsed_time} sec"
         sleep @interval
       end
     end
