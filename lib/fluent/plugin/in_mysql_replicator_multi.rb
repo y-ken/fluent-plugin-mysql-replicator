@@ -15,6 +15,9 @@ module Fluent
     config_param :manager_database, :string, :default => 'replicator_manager'
     config_param :tag, :string, :default => nil
 
+    config_param :bulk_insert_count, :integer, :default => 20
+    config_param :bulk_insert_timeout, :integer, :default => 10
+
     def configure(conf)
       super
       @reconnect_interval = Config.time_value('10sec')
@@ -27,6 +30,11 @@ module Fluent
       begin
         @threads = []
         @mutex = Mutex.new
+        @threads << Thread.new {
+          @hash_table_bulk_insert = []
+          @hash_table_bulk_insert_last_time = Time.now
+          hash_table_flusher
+        }
         get_settings.each do |config|
           @threads << Thread.new {
             poll(config)
@@ -162,7 +170,7 @@ module Fluent
       ids.each do |id|
         case opts[:event]
         when :insert
-          query = "insert into hash_tables (setting_name,setting_query_pk,setting_query_hash) values('#{opts[:setting_name]}','#{id}','#{opts[:hash]}')"
+          add_hash_table_buffer(opts[:setting_name], id, opts[:hash])
         when :update
           query = "update hash_tables set setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         when :delete
@@ -178,6 +186,31 @@ module Fluent
         $log.warn "mysql_replicator_multi: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
+    end
+
+    def add_hash_table_buffer(setting_name, id, hash)
+      @hash_table_bulk_insert << "('#{setting_name}','#{id}','#{hash}')"
+      flush_hash_table if @hash_table_bulk_insert.size > @bulk_insert_count
+    end
+
+    def hash_table_flusher
+      loop do
+        if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
+          sleep @bulk_insert_timeout
+          next
+        end
+        @mutex.synchronize {
+          flush_hash_table 
+        }
+      end
+    end
+
+    def flush_hash_table
+      return if @hash_table_bulk_insert.empty?
+      query = "insert into hash_tables (setting_name,setting_query_pk,setting_query_hash) values #{@hash_table_bulk_insert.join(',')}"
+      @manager_db.query(query)
+      @hash_table_bulk_insert.clear
+      @hash_table_bulk_insert_last_time = Time.now
     end
 
     def emit_record(tag, record)
