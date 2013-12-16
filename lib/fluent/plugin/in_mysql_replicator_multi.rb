@@ -91,7 +91,7 @@ module Fluent
           end
           db.close
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
-          $log.info "mysql_replicator_multi: finished execution :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} sec"
+          $log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} sec"
           sleep config['interval']
         end
       rescue StandardError => e
@@ -172,9 +172,9 @@ module Fluent
         when :insert
           add_hash_table_buffer(opts[:setting_name], id, opts[:hash])
         when :update
-          query = "update hash_tables set setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
+          query = "UPDATE hash_tables SET setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         when :delete
-          query = "delete from hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
+          query = "DELETE FROM hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{id}'"
         end
         @manager_db.query(query) unless query.nil?
       end
@@ -207,7 +207,7 @@ module Fluent
 
     def flush_hash_table
       return if @hash_table_bulk_insert.empty?
-      query = "insert into hash_tables (setting_name,setting_query_pk,setting_query_hash) values #{@hash_table_bulk_insert.join(',')}"
+      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash) VALUES #{@hash_table_bulk_insert.join(',')}"
       @manager_db.query(query)
       @hash_table_bulk_insert.clear
       @hash_table_bulk_insert_last_time = Time.now
