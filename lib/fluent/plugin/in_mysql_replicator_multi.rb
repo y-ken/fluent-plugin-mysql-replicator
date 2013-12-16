@@ -15,7 +15,7 @@ module Fluent
     config_param :manager_database, :string, :default => 'replicator_manager'
     config_param :tag, :string, :default => nil
 
-    config_param :bulk_insert_count, :integer, :default => 20
+    config_param :bulk_insert_count, :integer, :default => 50
     config_param :bulk_insert_timeout, :integer, :default => 10
 
     def configure(conf)
@@ -187,7 +187,7 @@ module Fluent
 
     def add_hash_table_buffer(setting_name, id, hash)
       @hash_table_bulk_insert << "('#{setting_name}','#{id}','#{hash}')"
-      flush_hash_table if @hash_table_bulk_insert.size > @bulk_insert_count
+      flush_hash_table if @hash_table_bulk_insert.size >= @bulk_insert_count
     end
 
     def hash_table_flusher
