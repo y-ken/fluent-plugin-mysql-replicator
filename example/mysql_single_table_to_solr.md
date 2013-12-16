@@ -44,6 +44,9 @@ It is a guide to replicate single mysql table to solr.
   # Set frequency of sending bulk request to Solr.
   flush_interval 5s
 
+  # Set maximum retry interval (required fluentd >= 0.10.41)
+  max_retry_wait 1800
+
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes
 </match>
@@ -66,6 +69,9 @@ On this case, the solr url will be set `http://localhost:8983/solr`
 
   # Set frequency of sending bulk request to Solr.
   flush_interval 5s
+
+  # Set maximum retry interval (required fluentd >= 0.10.41)
+  max_retry_wait 1800
 
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes

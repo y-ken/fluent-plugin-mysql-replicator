@@ -51,7 +51,9 @@ $ tail -f /var/log/td-agent/td-agent.log
 
 ## Configuration Examples
 
-* [mysql_single_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_single_table_to_elasticsearch.md)* [mysql_multi_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)* [mysql_single_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_single_table_to_solr.md)
+* [mysql_single_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_single_table_to_elasticsearch.md)
+* [mysql_multi_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)
+* [mysql_single_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_single_table_to_solr.md)
 * [mysql_multi_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_solr.md)
 
 ## Tutorial for Quickstart (mysql_replicator)
@@ -217,7 +219,10 @@ it is a sample which you have inserted row.
 
   # Set frequency of sending bulk request to Elasticsearch node.
   flush_interval 5s
-  
+
+  # Set maximum retry interval (required fluentd >= 0.10.41)
+  max_retry_wait 1800
+
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes
 </match>

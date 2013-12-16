@@ -35,6 +35,9 @@ It is a guide to replicate multiple mysql table to solr.
   # Set frequency of sending bulk request to Solr.
   flush_interval 5s
 
+  # Set maximum retry interval (required fluentd >= 0.10.41)
+  max_retry_wait 1800
+
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes
 </match>
@@ -56,6 +59,9 @@ When you use default core (won't specify), change the value of `tag_format` like
 
   # Set frequency of sending bulk request to Solr.
   flush_interval 5s
+
+  # Set maximum retry interval (required fluentd >= 0.10.41)
+  max_retry_wait 1800
 
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes
