@@ -191,13 +191,21 @@ module Fluent
     end
 
     def hash_table_flusher
-      loop do
-        if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
-          sleep @bulk_insert_timeout
-          next
+      begin
+        loop do
+          if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
+            sleep @bulk_insert_timeout
+            next
+          end
+          @mutex.synchronize {
+            flush_hash_table 
+          }
         end
+      rescue StandardError => e
         @mutex.synchronize {
-          flush_hash_table 
+          $log.error "mysql_replicator_multi: failed to flush buffered query. :config=>#{masked_config}"
+          $log.error "error: #{e.message}"
+          $log.error e.backtrace.join("\n")
         }
       end
     end
