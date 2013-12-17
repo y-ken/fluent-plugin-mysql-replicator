@@ -125,9 +125,8 @@ module Fluent
 
     def get_stored_hash(setting_name, id)
       query = "SELECT SQL_NO_CACHE setting_query_hash FROM hash_tables WHERE setting_query_pk = #{id.to_i} AND setting_name = '#{setting_name}'"
-      @manager_db.query(query).each do |row|
-        return row['setting_query_hash']
-      end
+      result = @manager_db.query(query)
+      return result.first['setting_query_hash']
     end
 
     def detect_delete(config, current_id, previous_id)
