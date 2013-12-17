@@ -72,7 +72,7 @@ module Fluent
           $log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
         }
         primary_key = config['primary_key']
-        previous_id = current_id = 0
+        previous_id = current_id = nil
         loop do
           start_time = Time.now
           db = get_origin_connection(config)
@@ -131,7 +131,7 @@ module Fluent
     end
 
     def detect_delete(config, current_id, previous_id)
-      return unless config['enable_delete'] == 1
+      return if config['enable_delete'] != 1 || previous_id.nil?
       deleted_ids = collect_gap_ids(config['name'], current_id, previous_id)
       unless deleted_ids.empty?
         event = :delete
