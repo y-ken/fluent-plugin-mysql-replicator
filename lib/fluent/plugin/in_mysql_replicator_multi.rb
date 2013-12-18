@@ -180,8 +180,8 @@ module Fluent
 
     def format_tag(tag, param)
       pattern = {'${name}' => param[:name], '${event}' => param[:event].to_s, '${primary_key}' => param[:primary_key]}
-      tag.gsub(/\${[a-z_]+(\[[0-9]+\])?}/, pattern) do
-        $log.warn "mysql_replicator_multi: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
+      tag.gsub(/(\${[a-z_]+})/) do
+        $log.warn "mysql_replicator_multi: unknown placeholder found. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
     end
@@ -199,7 +199,7 @@ module Fluent
             next
           end
           @mutex.synchronize {
-            flush_hash_table 
+            flush_hash_table
           }
         end
       rescue StandardError => e
