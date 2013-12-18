@@ -74,6 +74,7 @@ module Fluent
         primary_key = config['primary_key']
         previous_id = current_id = nil
         loop do
+          rows_count = 0
           start_time = Time.now
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
@@ -88,11 +89,12 @@ module Fluent
               detect_delete(config, current_id, previous_id)
             }
             previous_id = current_id
+            rows_count += 1
           end
           db.close
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
-            $log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :elapsed_time=>#{elapsed_time} sec"
+            $log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
           }
           sleep config['interval']
         end

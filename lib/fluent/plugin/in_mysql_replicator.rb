@@ -53,6 +53,7 @@ module Fluent
       table_hash = Hash.new
       ids = Array.new
       loop do
+        rows_count = 0
         start_time = Time.now
         previous_ids = ids
         current_ids = Array.new
@@ -72,6 +73,7 @@ module Fluent
             emit_record(tag, row)
           end
           table_hash[row[@primary_key]] = current_hash
+          rows_count += 1
         end
         ids = current_ids
         if @enable_delete
@@ -89,7 +91,7 @@ module Fluent
           end
         end
         elapsed_time = sprintf("%0.02f", Time.now - start_time)
-        $log.info "mysql_replicator: finished execution :tag=>#{tag} :elapsed_time=>#{elapsed_time} sec"
+        $log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
         sleep @interval
       end
     end
