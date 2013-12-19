@@ -186,9 +186,9 @@ VALUES
 
 it is a sample which you have inserted row.
 
-| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete |enable_loose_insert |enable_loose_delete |
-|----|-----------|--------------|-----------------|------|-----------|---------------|----------|------------------------------|----------|-------------|---------------|
-|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |             0 |             0 |
+| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete | enable_loose_insert | enable_loose_delete |
+|----|-----------|--------------|-----------------|------|-----------|---------------|----------|------------------------------|----------|-------------|---------------|----|----|
+|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |  0 | 0 |
 
 ### configuration
 
