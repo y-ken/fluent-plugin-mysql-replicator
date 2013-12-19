@@ -14,7 +14,14 @@ gem install fluent-plugin-mysql-replicator
 
 ### td-agent gem
 /usr/lib64/fluent/ruby/bin/fluent-gem install fluent-plugin-mysql-replicator
+
+### RPM
+### package availables at https://github.com/y-ken/yamabiko/releases
 `````
+
+**Note:** RPM package available which does not conflict system installed Ruby or td-agent.  
+https://github.com/y-ken/yamabiko/releases
+
 
 ## Included plugins
 
