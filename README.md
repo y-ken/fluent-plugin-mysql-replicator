@@ -162,6 +162,8 @@ CREATE TABLE `settings` (
   `interval` int(11) NOT NULL,
   `primary_key` varchar(255) DEFAULT 'id',
   `enable_delete` int(11) DEFAULT '1',
+  `enable_loose_insert` int(11) DEFAULT '0',
+  `enable_loose_delete` int(11) DEFAULT '0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
@@ -184,9 +186,9 @@ VALUES
 
 it is a sample which you have inserted row.
 
-| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete |
+| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete |enable_loose_insert |enable_loose_delete |
 |----|-----------|--------------|-----------------|------|-----------|---------------|----------|------------------------------|----------|-------------|---------------|
-|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |
+|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |             0 |             0 |
 
 ### configuration
 

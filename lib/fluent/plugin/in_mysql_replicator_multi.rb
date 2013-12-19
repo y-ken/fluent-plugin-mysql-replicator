@@ -110,7 +110,7 @@ module Fluent
     def detect_insert_update(config, row)
       primary_key = config['primary_key']
       current_id = row[primary_key]
-      stored_hash = get_stored_hash(config['name'], current_id)
+      stored_hash = config['enable_loose_insert'] == 1 ? "" : get_stored_hash(config['name'], current_id)
       current_hash = Digest::SHA1.hexdigest(row.flatten.join)
 
       event = nil
@@ -134,7 +134,7 @@ module Fluent
 
     def detect_delete(config, current_id, previous_id)
       return if config['enable_delete'] != 1 || previous_id.nil?
-      deleted_ids = collect_gap_ids(config['name'], current_id, previous_id)
+      deleted_ids = collect_gap_ids(config, current_id, previous_id)
       unless deleted_ids.empty?
         event = :delete
         deleted_ids.each do |id|
@@ -145,11 +145,14 @@ module Fluent
       end
     end
 
-    def collect_gap_ids(setting_name, current_id, previous_id)
-      if (current_id - previous_id) > 1
+    def collect_gap_ids(config, current_id, previous_id)
+      setting_name = config['name']
+      if (current_id - previous_id) > 1 && config['enable_loose_delete'] == 0
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}' 
           AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
+      elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 1
+        return [*previous_id...current_id] - [current_id,previous_id]
       elsif previous_id > current_id
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}' 
@@ -215,7 +218,9 @@ module Fluent
 
     def flush_hash_table
       return if @hash_table_bulk_insert.empty?
-      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash) VALUES #{@hash_table_bulk_insert.join(',')}"
+      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash) 
+        VALUES #{@hash_table_bulk_insert.join(',')}
+        ON DUPLICATE KEY UPDATE setting_query_hash = VALUES(setting_query_hash)"
       @manager_db.query(query)
       @hash_table_bulk_insert.clear
       @hash_table_bulk_insert_last_time = Time.now
