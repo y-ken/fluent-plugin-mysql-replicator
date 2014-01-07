@@ -3,7 +3,7 @@
 ## Overview
 
 Fluentd input plugin to track insert/update/delete event from MySQL database server.  
-Not only that, it could multiple table replication into Elasticsearch/Solr.  
+Not only that, it could multiple table replication into single or multi Elasticsearch/Solr.  
 It's comming support replicate to another RDB/noSQL.
 
 ## Installation
