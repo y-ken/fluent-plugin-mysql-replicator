@@ -1,4 +1,5 @@
 require 'rsolr'
+require 'uri'
 
 class Fluent::MysqlReplicatorSolrOutput < Fluent::BufferedOutput
   Fluent::Plugin.register_output('mysql_replicator_solr', self)
@@ -42,7 +43,7 @@ class Fluent::MysqlReplicatorSolrOutput < Fluent::BufferedOutput
       tag_parts = tag.match(@tag_format)
       id_key = tag_parts['primary_key']
       core_name = tag_parts['core_name'].nil? ? '' : tag_parts['core_name']
-      url = "http://#{@host}:#{@port}/solr/#{core_name}"
+      url = "http://#{@host}:#{@port}/solr/#{URI.escape(core_name)}"
       solr_connection[url] = RSolr.connect(:url => url) if solr_connection[url].nil?
       if tag_parts['event'] == 'delete'
         solr_connection[url].delete_by_id record[id_key]
