@@ -20,7 +20,6 @@ module Fluent
 
     def configure(conf)
       super
-      @reconnect_interval = Config.time_value('10sec')
       if @tag.nil?
         raise Fluent::ConfigError, "mysql_replicator_multi: missing 'tag' parameter. Please add following line into config like 'tag replicator.${name}.${event}.${primary_key}'"
       end
@@ -243,10 +242,8 @@ module Fluent
           :stream => false,
           :cache_rows => false
         )
-      rescue Exception => e
-        $log.warn "mysql_replicator_multi: #{e}"
-        sleep @reconnect_interval
-        retry
+      rescue Mysql2::Error => e
+        raise "mysql_replicator_multi: #{e}"
       end
     end
 
@@ -263,10 +260,8 @@ module Fluent
           :stream => true,
           :cache_rows => false
         )
-      rescue Exception => e
-        $log.warn "mysql_replicator_multi: #{e}"
-        sleep @reconnect_interval
-        retry
+      rescue Mysql2::Error => e
+        raise "mysql_replicator_multi: #{e}"
       end
     end
   end
