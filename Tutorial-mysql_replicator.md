@@ -55,6 +55,7 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
     flush_interval 5s
     
     # Queued chunks are flushed at shutdown process. (recommend for more stability)
+    # It's sample for td-agent. If you use Yamabiko, replace path from 'td-agent' to 'yamabiko'.
     flush_at_shutdown yes
     buffer_type file
     buffer_path /var/log/td-agent/buffer/mysql_replicator_elasticsearch

@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `interval` int(11) NOT NULL,
   `primary_key` varchar(255) DEFAULT 'id',
   `enable_delete` int(11) DEFAULT '1',
+  -- On enabling 'enable_loose_insert: 1', make it faster synchronization to skip checking hash_tables.
   `enable_loose_insert` int(11) DEFAULT '0',
+  -- On enabling 'enable_loose_delete: 1', turn on speculative delete but performance penalty on non-contiguous primary key.
   `enable_loose_delete` int(11) DEFAULT '0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
