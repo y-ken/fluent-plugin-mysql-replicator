@@ -40,6 +40,8 @@ It is a guide to replicate multiple mysql table to solr.
 
   # Queued chunks are flushed at shutdown process.
   flush_at_shutdown yes
+  buffer_type file
+  buffer_path /var/log/td-agent/buffer/mysql_replicator_elasticsearch
 </match>
 ```
 

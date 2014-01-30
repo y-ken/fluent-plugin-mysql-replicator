@@ -46,9 +46,6 @@ It is a guide to replicate single mysql table to solr.
 
   # Set maximum retry interval (required fluentd >= 0.10.41)
   max_retry_wait 1800
-
-  # Queued chunks are flushed at shutdown process.
-  flush_at_shutdown yes
 </match>
 ```
 
