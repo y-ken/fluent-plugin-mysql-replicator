@@ -45,5 +45,11 @@ It is a guide to replicate single mysql table to elasticsearch.
 
   # Set maximum retry interval (required fluentd >= 0.10.41)
   max_retry_wait 1800
+
+  # Queued chunks are flushed at shutdown process.
+  # It's sample for td-agent. If you use Yamabiko, replace path from 'td-agent' to 'yamabiko'.
+  flush_at_shutdown yes
+  buffer_type file
+  buffer_path /var/log/td-agent/buffer/mysql_replicator_elasticsearch
 </match>
 ```

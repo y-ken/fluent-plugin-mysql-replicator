@@ -39,6 +39,7 @@ It is a guide to replicate multiple mysql table to solr.
   max_retry_wait 1800
 
   # Queued chunks are flushed at shutdown process.
+  # It's sample for td-agent. If you use Yamabiko, replace path from 'td-agent' to 'yamabiko'.
   flush_at_shutdown yes
   buffer_type file
   buffer_path /var/log/td-agent/buffer/mysql_replicator_elasticsearch
@@ -66,6 +67,9 @@ When you use default core (won't specify), change the value of `tag_format` like
   max_retry_wait 1800
 
   # Queued chunks are flushed at shutdown process.
+  # It's sample for td-agent. If you use Yamabiko, replace path from 'td-agent' to 'yamabiko'.
   flush_at_shutdown yes
+  buffer_type file
+  buffer_path /var/log/td-agent/buffer/mysql_replicator_solr
 </match>
 ```
