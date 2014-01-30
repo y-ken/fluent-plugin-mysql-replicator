@@ -1,7 +1,7 @@
-CREATE DATABASE replicator_manager;
+CREATE DATABASE IF NOT EXISTS replicator_manager;
 USE replicator_manager;
 
-CREATE TABLE `hash_tables` (
+CREATE TABLE IF NOT EXISTS `hash_tables` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `setting_name` varchar(255) NOT NULL,
   `setting_query_pk` int(11) NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE `hash_tables` (
   UNIQUE KEY `setting_query_pk` (`setting_query_pk`,`setting_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
-CREATE TABLE `settings` (
+CREATE TABLE IF NOT EXISTS `settings` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `is_active` int(11) NOT NULL DEFAULT '1',
   `name` varchar(255) NOT NULL,
