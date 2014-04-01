@@ -15,6 +15,7 @@ module Fluent
     config_param :database, :string, :default => nil
     config_param :encoding, :string, :default => 'utf8'
     config_param :query, :string
+    config_param :prepared_query, :string
     config_param :primary_key, :string, :default => 'id'
     config_param :interval, :string, :default => '1m'
     config_param :enable_delete, :bool, :default => true
@@ -28,7 +29,7 @@ module Fluent
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
       end
 
-      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
+      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :prepared_query=>#{@prepared_query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
     end
 
     def start
@@ -57,10 +58,20 @@ module Fluent
         start_time = Time.now
         previous_ids = ids
         current_ids = Array.new
+        prepared_con = get_connection()
+        @prepared_query.split(/;/).each do |query|
+          prepared_con.query(query)
+        end
         query(@query).each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
+          row.select {|k, v| v.to_s.match(/^SELECT/i) }.each do |k, v|
+            row[k] = [] unless row[k].is_a?(Array)
+            prepared_con.query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s)).each do |nest_row|
+              row[k] << nest_row
+            end
+          end
           if row[@primary_key].nil?
             $log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
             break
@@ -112,10 +123,10 @@ module Fluent
       Engine.emit(tag, Engine.now, record)
     end
 
-    def query(query)
-      @mysql ||= get_connection
+    def query(query, con = nil)
       begin
-        return @mysql.query(query)
+        mysql = get_connection if con.nil?
+        return mysql.query(query)
       rescue Exception => e
         $log.warn "mysql_replicator: #{e}"
         sleep @interval

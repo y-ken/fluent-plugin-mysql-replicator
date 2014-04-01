@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `password` varchar(255) NOT NULL,
   `database` varchar(255) NOT NULL,
   `query` TEXT NOT NULL,
+  -- To generate nestd document, use this field.
+  `prepared_query` TEXT NOT NULL,
   `interval` int(11) NOT NULL,
   `primary_key` varchar(255) DEFAULT 'id',
   `enable_delete` int(11) DEFAULT '1',

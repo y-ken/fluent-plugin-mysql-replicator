@@ -85,6 +85,7 @@ See tutorial at [Tutorial-mysql_replicator_multi.md](https://github.com/y-ken/fl
 * Multiple table synchronization supported and its DSN stored in MySQL management table.
 * Using MySQL database as hash table cache to support replicate over a millions table.
 * It is recommend to make whole copy of tables.
+* Nested documents are supported with placeholder which accessing to temporary table created at the each loop.
 
 **Examples**
 

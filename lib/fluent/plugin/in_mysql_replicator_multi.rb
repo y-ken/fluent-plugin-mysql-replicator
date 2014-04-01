@@ -75,9 +75,21 @@ module Fluent
         loop do
           rows_count = 0
           start_time = Time.now
+          unless config['prepared_query'].nil?
+            nest_db = get_origin_connection(config)
+            config['prepared_query'].strip.split(/;/).each do |query|
+              nest_db.query(query)
+            end
+          end
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
             row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
+            row.select {|k, v| v.to_s.match(/^SELECT/i) }.each do |k, v|
+              row[k] = [] unless row[k].is_a?(Array)
+              nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
+                row[k] << nest_row
+              end
+            end
             current_id = row[primary_key]
             @mutex.synchronize {
               if row[primary_key].nil?
@@ -148,17 +160,17 @@ module Fluent
       setting_name = config['name']
       if (current_id - previous_id) > 1 && config['enable_loose_delete'] == 0
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}' 
+          WHERE setting_name = '#{setting_name}'
           AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
       elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 1
         return [*previous_id...current_id] - [current_id,previous_id]
       elsif previous_id > current_id
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}' 
+          WHERE setting_name = '#{setting_name}'
           AND setting_query_pk > #{previous_id.to_i}"
       elsif previous_id == current_id
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}' 
+          WHERE setting_name = '#{setting_name}'
           AND (setting_query_pk > #{current_id.to_i} OR setting_query_pk < #{current_id.to_i})"
       end
       ids = Array.new
@@ -217,7 +229,7 @@ module Fluent
 
     def flush_hash_table
       return if @hash_table_bulk_insert.empty?
-      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash) 
+      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash)
         VALUES #{@hash_table_bulk_insert.join(',')}
         ON DUPLICATE KEY UPDATE setting_query_hash = VALUES(setting_query_hash)"
       @manager_db.query(query)
