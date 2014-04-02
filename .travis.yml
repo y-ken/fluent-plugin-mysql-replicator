@@ -4,3 +4,11 @@ rvm:
   - 2.1.0
   - 2.0.0
   - 1.9.3
+
+services:
+  - elasticsearch
+
+before_script:
+  - mysql < setup_mysql_replicator_multi.sql
+  - curl https://raw.github.com/moliware/travis-solr/master/travis-solr.sh | SOLR_VERSION=4.6.1 bash
+
