@@ -26,7 +26,17 @@ see [setup_mysql_replicator_multi.sql](https://github.com/y-ken/fluent-plugin-my
 
 ##### add replicator configuration.
 
+Let's download sql first.
+
 ```
+$ wget https://raw2.github.com/y-ken/fluent-plugin-mysql-replicator/master/setup_mysql_replicator_multi.sql
+```
+
+```sql
+-- Build 
+mysql> source /path/to/setup_mysql_replicator_multi.sql
+
+-- Set working database
 mysql> use replicator_manager;
 
 -- Add replicate source connection and query settings like below.
@@ -38,9 +48,42 @@ VALUES
 
 it is a sample which you have inserted row.
 
-| id | is_active |     name     |      host       | port | username  |   password    | database |            query             | interval | primary_key | enable_delete | enable_loose_insert | enable_loose_delete |
-|----|-----------|--------------|-----------------|------|-----------|---------------|----------|------------------------------|----------|-------------|---------------|----|----|
-|  1 |         1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb     | SELECT id, text from mytable; |       5 | id          |             1 |  0 | 0 |
+<table>
+<thead><tr>
+<th>id</th>
+<th>is_active</th>
+<th>name</th>
+<th>host</th>
+<th>port</th>
+<th>username</th>
+<th>password</th>
+<th>database</th>
+<th>query</th>
+<th>prepared_query</th>
+<th>interval</th>
+<th>primary_key</th>
+<th>enable_delete</th>
+<th>enable_loose_insert</th>
+<th>enable_loose_delete</th>
+</tr></thead>
+<tbody><tr>
+<td>1</td>
+<td>1</td>
+<td>mydb.mytable</td>
+<td>192.168.100.221</td>
+<td>3306</td>
+<td>mysqluser</td>
+<td>mysqlpassword</td>
+<td>mydb</td>
+<td>SELECT id, text from mytable;</td>
+<td>&nbsp;</td>
+<td>5</td>
+<td>id</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+</tr></tbody>
+</table>
 
 ### configuration
 
