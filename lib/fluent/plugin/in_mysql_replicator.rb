@@ -15,7 +15,7 @@ module Fluent
     config_param :database, :string, :default => nil
     config_param :encoding, :string, :default => 'utf8'
     config_param :query, :string
-    config_param :prepared_query, :string
+    config_param :prepared_query, :string, :default => nil
     config_param :primary_key, :string, :default => 'id'
     config_param :interval, :string, :default => '1m'
     config_param :enable_delete, :bool, :default => true
