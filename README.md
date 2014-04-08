@@ -67,6 +67,7 @@ For more detail are described at [Tutorial-mysql_replicator.md](https://github.c
 * Table (or view table) synchronization supported.
 * Replicate small record under a millons table.
 * It is recommend to use insert only table.
+* Nested documents are supported with placeholder which accessing to temporary table created at the each loop.
 
 **Examples**
 
@@ -96,7 +97,8 @@ See tutorial at [Tutorial-mysql_replicator_multi.md](https://github.com/y-ken/fl
 
 Pull requests are very welcome like below!!
 
-* more tests.
+* more documents
+* more tests with mock.
 * support string type of primary_key.
 * support reload setting on demand.
 
