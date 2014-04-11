@@ -69,6 +69,7 @@ module Fluent
           row.select {|k, v| v.to_s.strip.match(/^SELECT/i) }.each do |k, v|
             row[k] = [] unless row[k].is_a?(Array)
             prepared_con.query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s)).each do |nest_row|
+              nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
               row[k] << nest_row
             end
           end
