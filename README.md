@@ -93,6 +93,17 @@ See tutorial at [Tutorial-mysql_replicator_multi.md](https://github.com/y-ken/fl
 * [mysql_multi_table_to_elasticsearch.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_elasticsearch.md)
 * [mysql_multi_table_to_solr.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/example/mysql_multi_table_to_solr.md)
 
+## Articles
+
+* MySQLテーブルへの更新/削除イベントを逐次取得するFluentdプラグイン「fluent-plugin-mysql-replicator」をリリースしました - Y-Ken Studio<br />
+http://y-ken.hatenablog.com/entry/fluent-plugin-mysql-replicator-has-released
+
+* MySQLユーザ視点での小さく始めるElasticsearch<br />
+http://www.slideshare.net/y-ken/introducing-elasticsearch-for-mysql-users
+
+* MySQLからelasticsearchへ、レコードをネスト構造化しつつ同期出来る fluent-plugin-mysql-replicator v0.4.0 を公開しました - Y-Ken Studio<br />
+http://y-ken.hatenablog.com/entry/fluent-plugin-mysql-repicator-v0.4.0
+
 ## TODO
 
 Pull requests are very welcome like below!!
