@@ -30,7 +30,6 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
       query           SELECT id, text from search_text
       enable_delete   no
     ]
-    d.instance.inspect
     assert_equal 'localhost', d.instance.host
     assert_equal 3306, d.instance.port
     assert_equal 30, d.instance.interval

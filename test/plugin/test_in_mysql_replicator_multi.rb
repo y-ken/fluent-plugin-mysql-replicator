@@ -22,7 +22,6 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
       d = create_driver('')
     }
     d = create_driver(CONFIG)
-    d.instance.inspect
     assert_equal 'localhost', d.instance.manager_host
     assert_equal 3306, d.instance.manager_port
     assert_equal 'replicator_manager', d.instance.manager_database
