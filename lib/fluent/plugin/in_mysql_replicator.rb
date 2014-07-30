@@ -59,8 +59,10 @@ module Fluent
         previous_ids = ids
         current_ids = Array.new
         prepared_con = get_connection()
-        @prepared_query.split(/;/).each do |query|
-          prepared_con.query(query)
+        if !@prepared_query.nil?
+          @prepared_query.split(/;/).each do |query|
+            prepared_con.query(query)
+          end
         end
         query(@query).each do |row|
           current_ids << row[@primary_key]
