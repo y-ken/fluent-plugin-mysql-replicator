@@ -65,11 +65,11 @@ module Fluent
         query(@query).each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
-          row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
+          row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
           row.select {|k, v| v.to_s.strip.match(/^SELECT/i) }.each do |k, v|
             row[k] = [] unless row[k].is_a?(Array)
             prepared_con.query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s)).each do |nest_row|
-              nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date)}
+              nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
               row[k] << nest_row
             end
           end
