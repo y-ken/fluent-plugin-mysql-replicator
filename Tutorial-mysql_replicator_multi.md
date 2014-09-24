@@ -41,9 +41,9 @@ mysql> use replicator_manager;
 
 -- Add replicate source connection and query settings like below.
 mysql> INSERT INTO `settings`
-  (`id`, `is_active`, `name`, `host`, `port`, `username`, `password`, `database`, `query`, `interval`, `primary_key`, `enable_delete`)
+  (`id`, `is_active`, `name`, `host`, `port`, `username`, `password`, `database`, `query`, `prepared_query`, `interval`, `primary_key`, `enable_delete`)
 VALUES
-  (NULL, 1, 'mydb.mytable', '192.168.100.221', 3306, 'mysqluser', 'mysqlpassword', 'mydb', 'SELECT id, text from mytable;', 5, 'id', 1);
+  (NULL, 1, 'mydb.mytable', '192.168.100.221', 3306, 'mysqluser', 'mysqlpassword', 'mydb', 'SELECT id, text from mytable;', '', 5, 'id', 1);
 ```
 
 it is a sample which you have inserted row.
