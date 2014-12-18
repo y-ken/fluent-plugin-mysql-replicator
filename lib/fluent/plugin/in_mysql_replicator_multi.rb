@@ -84,7 +84,7 @@ module Fluent
           db = get_origin_connection(config)
           db.query(config['query']).each do |row|
             row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-            row.select {|k, v| v.to_s.strip.match(/^SELECT/i) }.each do |k, v|
+            row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
               row[k] = [] unless row[k].is_a?(Array)
               nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
                 nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
