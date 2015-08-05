@@ -239,7 +239,7 @@ module Fluent
     end
 
     def emit_record(tag, record)
-      Engine.emit(tag, Engine.now, record)
+      router.emit(tag, Engine.now, record)
     end
 
     def get_manager_connection
