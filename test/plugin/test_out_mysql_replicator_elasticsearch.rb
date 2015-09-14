@@ -124,4 +124,12 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
       driver.run
     }
   end
+
+  def test_writes_to_https_host
+    driver.configure("ssl true\n")
+    elastic_request = stub_elastic("https://localhost:9200/_bulk")
+    driver.emit(sample_record)
+    driver.run
+    assert_requested(elastic_request)
+  end
 end
