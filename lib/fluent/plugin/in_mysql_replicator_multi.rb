@@ -11,7 +11,7 @@ module Fluent
     config_param :manager_host, :string, :default => 'localhost'
     config_param :manager_port, :integer, :default => 3306
     config_param :manager_username, :string, :default => nil
-    config_param :manager_password, :string, :default => ''
+    config_param :manager_password, :string, :default => '', :secret => true
     config_param :manager_database, :string, :default => 'replicator_manager'
     config_param :tag, :string, :default => nil
 

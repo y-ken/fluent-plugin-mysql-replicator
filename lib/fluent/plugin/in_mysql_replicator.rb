@@ -11,7 +11,7 @@ module Fluent
     config_param :host, :string, :default => 'localhost'
     config_param :port, :integer, :default => 3306
     config_param :username, :string, :default => 'root'
-    config_param :password, :string, :default => nil
+    config_param :password, :string, :default => nil, :secret => true
     config_param :database, :string, :default => nil
     config_param :encoding, :string, :default => 'utf8'
     config_param :query, :string
