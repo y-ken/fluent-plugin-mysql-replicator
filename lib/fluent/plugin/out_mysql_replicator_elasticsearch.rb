@@ -7,6 +7,9 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
   config_param :host, :string,  :default => 'localhost'
   config_param :port, :integer, :default => 9200
   config_param :tag_format, :string, :default => nil
+  config_param :ssl, :bool, :default => false
+  config_param :username, :string, :default => nil
+  config_param :password, :string, :default => nil, :secret => true
 
   DEFAULT_TAG_FORMAT = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
 
@@ -60,7 +63,13 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
     bulk_message << ""
 
     http = Net::HTTP.new(@host, @port.to_i)
+    http.use_ssl = @ssl
+
     request = Net::HTTP::Post.new('/_bulk', {'content-type' => 'application/json; charset=utf-8'})
+    if @username && @password
+      request.basic_auth(@username, @password)
+    end
+
     request.body = bulk_message.join("\n")
     http.request(request).value
   end
