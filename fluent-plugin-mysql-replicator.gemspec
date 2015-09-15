@@ -14,6 +14,7 @@ Gem::Specification.new do |s|
 
   s.add_development_dependency "rake"
   s.add_development_dependency "webmock"
+  s.add_development_dependency "test-unit", ">= 3.1.0"
 
   s.add_runtime_dependency "fluentd"
   s.add_runtime_dependency "mysql2"
