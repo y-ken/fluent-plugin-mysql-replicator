@@ -132,4 +132,23 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     driver.run
     assert_requested(elastic_request)
   end
+
+  def test_writes_to_http_basic_auth
+    driver.configure("username foo\n")
+    driver.configure("password bar\n")
+    elastic_request = stub_elastic("http://foo:bar@localhost:9200/_bulk")
+    driver.emit(sample_record)
+    driver.run
+    assert_requested(elastic_request)
+  end
+
+  def test_writes_to_http_basic_auth_failed
+    driver.configure("username wrong_user\n")
+    driver.configure("password bar\n")
+    elastic_request = stub_elastic("http://foo:bar@localhost:9200/_bulk")
+    driver.emit(sample_record)
+    assert_raise(WebMock::NetConnectNotAllowedError) {
+      driver.run
+    }
+  end
 end
