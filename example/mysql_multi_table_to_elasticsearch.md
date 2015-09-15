@@ -28,6 +28,13 @@ It is a guide to replicate multiple mysql table to elasticsearch.
   host localhost
   port 9200
 
+  # You can configure to use SSL for connecting to Elasticsearch.
+  # ssl true
+
+  # Basic authentication credentials can be configured
+  # username basic_auth_username
+  # password basic_auth_password
+
   # Set Elasticsearch index, type, and unique id (primary_key) from tag.
   tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
