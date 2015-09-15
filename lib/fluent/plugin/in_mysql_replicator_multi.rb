@@ -2,6 +2,11 @@ module Fluent
   class MysqlReplicatorMultiInput < Fluent::Input
     Plugin.register_input('mysql_replicator_multi', self)
 
+    # Define `router` method to support v0.10.57 or earlier
+    unless method_defined?(:router)
+      define_method("router") { Engine }
+    end
+
     def initialize
       require 'mysql2'
       require 'digest/sha1'
@@ -239,7 +244,7 @@ module Fluent
     end
 
     def emit_record(tag, record)
-      Engine.emit(tag, Engine.now, record)
+      router.emit(tag, Engine.now, record)
     end
 
     def get_manager_connection
