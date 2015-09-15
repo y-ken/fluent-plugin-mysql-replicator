@@ -9,7 +9,7 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
   config_param :tag_format, :string, :default => nil
   config_param :ssl, :bool, :default => false
   config_param :username, :string, :default => nil
-  config_param :password, :string, :default => nil
+  config_param :password, :string, :default => nil, :secret => true
 
   DEFAULT_TAG_FORMAT = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
 
