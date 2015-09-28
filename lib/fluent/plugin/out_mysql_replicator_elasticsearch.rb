@@ -39,6 +39,10 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
     super
   end
 
+  def id_val(record, id_key)
+    id_key.map { |col| record[col] }.join(",")
+  end
+
   def write(chunk)
     bulk_message = []
 
@@ -46,15 +50,16 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
       tag_parts = tag.match(@tag_format)
       target_index = tag_parts['index_name']
       target_type = tag_parts['type_name']
-      id_key = tag_parts['primary_key']
+      id_key = tag_parts['primary_key'].split(",")
+      id_val = id_val(record, id_key)
 
       if tag_parts['event'] == 'delete'
-        meta = { "delete" => {"_index" => target_index, "_type" => target_type, "_id" => record[id_key]} }
+        meta = { "delete" => {"_index" => target_index, "_type" => target_type, "_id" => id_val} }
         bulk_message << Yajl::Encoder.encode(meta)
       else
         meta = { "index" => {"_index" => target_index, "_type" => target_type} }
-        if id_key && record[id_key]
-          meta['index']['_id'] = record[id_key]
+        if id_key && id_val
+          meta['index']['_id'] = id_val
         end
         bulk_message << Yajl::Encoder.encode(meta)
         bulk_message << Yajl::Encoder.encode(record)

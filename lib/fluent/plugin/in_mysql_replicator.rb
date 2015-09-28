@@ -21,7 +21,16 @@ module Fluent
     config_param :encoding, :string, :default => 'utf8'
     config_param :query, :string
     config_param :prepared_query, :string, :default => nil
-    config_param :primary_key, :string, :default => 'id'
+    config_param :primary_key, :default => 'id' do |val|
+      param = val.is_a?(String) ? JSON.load(val) : val
+      if param.is_a? String
+        [param]
+      elsif param.is_a? Array
+        param
+      else
+        raise Fluent::ConfigError, "mysql_replicator: 'primary_key' param must be either of String or Array. #{val}, #{param}"
+      end
+    end
     config_param :interval, :string, :default => '1m'
     config_param :enable_delete, :bool, :default => true
     config_param :tag, :string, :default => nil
@@ -70,7 +79,11 @@ module Fluent
           end
         end
         query(@query).each do |row|
-          current_ids << row[@primary_key]
+          # @primary_key is an array even though the primary key is single column
+          id = @primary_key.map do |col|
+            row[col]
+          end
+          current_ids << id
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
           row.select {|k, v| v.to_s.strip.match(/^SELECT/i) }.each do |k, v|
@@ -80,18 +93,18 @@ module Fluent
               row[k] << nest_row
             end
           end
-          if row[@primary_key].nil?
-            $log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
+          if id.select { |idval| idval.nil? }.length > 0
+            $log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}, #{id}"
             break
           end
-          if !table_hash.include?(row[@primary_key])
+          if !table_hash.include?(id)
             tag = format_tag(@tag, {:event => :insert})
             emit_record(tag, row)
-          elsif table_hash[row[@primary_key]] != current_hash
+          elsif table_hash[row[id]] != current_hash
             tag = format_tag(@tag, {:event => :update})
             emit_record(tag, row)
           end
-          table_hash[row[@primary_key]] = current_hash
+          table_hash[id] = current_hash
           rows_count += 1
         end
         ids = current_ids
@@ -120,7 +133,7 @@ module Fluent
     end
 
     def format_tag(tag, param)
-      pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key}
+      pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key.join(",")} #TODO
       tag.gsub(/(\${[a-z_]+})/) do
         $log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
