@@ -58,27 +58,31 @@ module Fluent
     def poll
       table_hash = Hash.new
       ids = Array.new
+      con = get_connection()
+      prepared_con = get_connection()
       loop do
         rows_count = 0
         start_time = Time.now
         previous_ids = ids
         current_ids = Array.new
-        prepared_con = get_connection()
         if !@prepared_query.nil?
           @prepared_query.split(/;/).each do |query|
             prepared_con.query(query)
           end
         end
-        query(@query).each do |row|
+        rows, con = query(@query, con)
+        rows.each do |row|
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
           row.select {|k, v| v.to_s.strip.match(/^SELECT/i) }.each do |k, v|
             row[k] = [] unless row[k].is_a?(Array)
-            prepared_con.query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s)).each do |nest_row|
+            nest_rows, prepared_con = query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s), prepared_con)
+            nest_rows.each do |nest_row|
               nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
               row[k] << nest_row
             end
+            prepared_con.close
           end
           if row[@primary_key].nil?
             $log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
@@ -94,6 +98,7 @@ module Fluent
           table_hash[row[@primary_key]] = current_hash
           rows_count += 1
         end
+        con.close
         ids = current_ids
         if @enable_delete
           if previous_ids.empty?
@@ -133,8 +138,9 @@ module Fluent
 
     def query(query, con = nil)
       begin
-        mysql = get_connection if con.nil?
-        return mysql.query(query)
+        con = con.nil? ? get_connection : con
+        con = con.ping ? con : get_connection
+        return con.query(query), con
       rescue Exception => e
         $log.warn "mysql_replicator: #{e}"
         sleep @interval
