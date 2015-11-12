@@ -269,7 +269,7 @@ module Fluent
       begin
         return Mysql2::Client.new(
           :host => config['host'],
-          :port => config['manager_port'],
+          :port => config['port'],
           :username => config['username'],
           :password => config['password'],
           :database => config['database'],
