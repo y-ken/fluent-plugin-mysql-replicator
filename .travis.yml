@@ -9,7 +9,9 @@ rvm:
 services:
   - elasticsearch
 
+before_install:
+  - gem update bundler
+
 before_script:
   - mysql < setup_mysql_replicator_multi.sql
   - curl https://raw.github.com/moliware/travis-solr/master/travis-solr.sh | SOLR_VERSION=4.6.1 bash
-
