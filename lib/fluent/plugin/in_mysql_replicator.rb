@@ -101,7 +101,9 @@ module Fluent
         con.close
         ids = current_ids
         if @enable_delete
-          if previous_ids.empty?
+          if current_ids.empty?
+            deleted_ids = Array.new
+          elsif previous_ids.empty?
             deleted_ids = [*1...current_ids.max] - current_ids
           else
             deleted_ids = previous_ids - current_ids
