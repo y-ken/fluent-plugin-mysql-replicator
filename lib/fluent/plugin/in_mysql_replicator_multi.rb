@@ -1,3 +1,5 @@
+require 'fluent/input'
+
 module Fluent
   class MysqlReplicatorMultiInput < Fluent::Input
     Plugin.register_input('mysql_replicator_multi', self)
@@ -10,7 +12,6 @@ module Fluent
     def initialize
       require 'mysql2'
       require 'digest/sha1'
-      super
     end
 
     config_param :manager_host, :string, :default => 'localhost'
