@@ -1,3 +1,5 @@
+require 'fluent/input'
+
 module Fluent
   class MysqlReplicatorInput < Fluent::Input
     Plugin.register_input('mysql_replicator', self)
