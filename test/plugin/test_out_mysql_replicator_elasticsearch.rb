@@ -1,7 +1,7 @@
 require 'helper'
 require 'webmock/test_unit'
 
-WebMock.disable_net_connect!
+WebMock.allow_net_connect!
 
 class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
   attr_accessor :index_cmds, :content_type
