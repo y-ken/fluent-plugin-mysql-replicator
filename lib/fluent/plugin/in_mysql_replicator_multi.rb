@@ -1,3 +1,5 @@
+require 'fluent/input'
+
 module Fluent
   class MysqlReplicatorMultiInput < Fluent::Input
     Plugin.register_input('mysql_replicator_multi', self)
