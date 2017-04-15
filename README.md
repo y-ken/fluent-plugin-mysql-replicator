@@ -10,8 +10,8 @@ It's comming support replicate to another RDB/noSQL.
 
 | fluent-plugin-mysql-replicator | fluentd    | ruby   |
 |--------------------|------------|--------|
-|  0.6.0            | v0.14.x | >= 2.1 |
-|  0.6.0            | v0.12.x | >= 1.9 |
+|  0.6.1            | v0.14.x | >= 2.1 |
+|  0.6.1            | v0.12.x | >= 1.9 |
 
 ## Installation
 
@@ -19,10 +19,10 @@ install with gem or fluent-gem command as:
 
 `````
 # for system installed fluentd
-$ gem install fluent-plugin-mysql-replicator
+$ gem install fluent-plugin-mysql-replicator -v 0.6.1
 
 # for td-agent2
-$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 0.6.0
+$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 0.6.1
 `````
 
 ## Included plugins
