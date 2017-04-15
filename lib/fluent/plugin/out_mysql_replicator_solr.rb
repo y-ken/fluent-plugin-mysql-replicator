@@ -1,3 +1,4 @@
+require 'fluent/output'
 require 'rsolr'
 require 'uri'
 
