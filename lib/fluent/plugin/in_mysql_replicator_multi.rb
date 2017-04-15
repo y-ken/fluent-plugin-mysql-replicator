@@ -4,11 +4,6 @@ module Fluent
   class MysqlReplicatorMultiInput < Fluent::Input
     Plugin.register_input('mysql_replicator_multi', self)
 
-    # Define `router` method to support v0.10.57 or earlier
-    unless method_defined?(:router)
-      define_method("router") { Engine }
-    end
-
     def initialize
       require 'mysql2'
       require 'digest/sha1'
@@ -48,10 +43,10 @@ module Fluent
             poll(config)
           }
         end
-        $log.error "mysql_replicator_multi: stop working due to empty configuration" if @threads.empty?
+        log.error "mysql_replicator_multi: stop working due to empty configuration" if @threads.empty?
       rescue StandardError => e
-        $log.error "error: #{e.message}"
-        $log.error e.backtrace.join("\n")
+        log.error "error: #{e.message}"
+        log.error e.backtrace.join("\n")
       end
     end
 
@@ -75,7 +70,7 @@ module Fluent
       begin
         masked_config = Hash[config.map {|k,v| (k == 'password') ? [k, v.to_s.gsub(/./, '*')] : [k,v]}]
         @mutex.synchronize {
-          $log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
+          log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
         }
         primary_key = config['primary_key']
         previous_id = current_id = nil
@@ -101,7 +96,7 @@ module Fluent
             current_id = row[primary_key]
             @mutex.synchronize {
               if row[primary_key].nil?
-                $log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
+                log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
                 break
               end
               detect_insert_update(config, row)
@@ -113,15 +108,15 @@ module Fluent
           db.close
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
-            $log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
+            log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
           }
           sleep config['interval']
         end
       rescue StandardError => e
         @mutex.synchronize {
-          $log.error "mysql_replicator_multi: failed to execute query. :config=>#{masked_config}"
-          $log.error "error: #{e.message}"
-          $log.error e.backtrace.join("\n")
+          log.error "mysql_replicator_multi: failed to execute query. :config=>#{masked_config}"
+          log.error "error: #{e.message}"
+          log.error e.backtrace.join("\n")
         }
       end
     end
@@ -205,7 +200,7 @@ module Fluent
     def format_tag(tag, param)
       pattern = {'${name}' => param[:name], '${event}' => param[:event].to_s, '${primary_key}' => param[:primary_key]}
       tag.gsub(/(\${[a-z_]+})/) do
-        $log.warn "mysql_replicator_multi: unknown placeholder found. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
+        log.warn "mysql_replicator_multi: unknown placeholder found. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
     end
@@ -228,9 +223,9 @@ module Fluent
         end
       rescue StandardError => e
         @mutex.synchronize {
-          $log.error "mysql_replicator_multi: failed to flush buffered query. :config=>#{masked_config}"
-          $log.error "error: #{e.message}"
-          $log.error e.backtrace.join("\n")
+          log.error "mysql_replicator_multi: failed to flush buffered query. :config=>#{masked_config}"
+          log.error "error: #{e.message}"
+          log.error e.backtrace.join("\n")
         }
       end
     end
@@ -246,7 +241,7 @@ module Fluent
     end
 
     def emit_record(tag, record)
-      router.emit(tag, Engine.now, record)
+      router.emit(tag, Fluent::Engine.now, record)
     end
 
     def get_manager_connection

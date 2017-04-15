@@ -4,11 +4,6 @@ module Fluent
   class MysqlReplicatorInput < Fluent::Input
     Plugin.register_input('mysql_replicator', self)
 
-    # Define `router` method to support v0.10.57 or earlier
-    unless method_defined?(:router)
-      define_method("router") { Engine }
-    end
-
     def initialize
       require 'mysql2'
       require 'digest/sha1'
@@ -36,7 +31,7 @@ module Fluent
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
       end
 
-      $log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :prepared_query=>#{@prepared_query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
+      log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :prepared_query=>#{@prepared_query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
     end
 
     def start
@@ -51,9 +46,9 @@ module Fluent
       begin
         poll
       rescue StandardError => e
-        $log.error "mysql_replicator: failed to execute query."
-        $log.error "error: #{e.message}"
-        $log.error e.backtrace.join("\n")
+        log.error "mysql_replicator: failed to execute query."
+        log.error "error: #{e.message}"
+        log.error e.backtrace.join("\n")
       end
     end
 
@@ -87,7 +82,7 @@ module Fluent
             prepared_con.close
           end
           if row[@primary_key].nil?
-            $log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
+            log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
             break
           end
           if !table_hash.include?(row[@primary_key])
@@ -119,7 +114,7 @@ module Fluent
           end
         end
         elapsed_time = sprintf("%0.02f", Time.now - start_time)
-        $log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
+        log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
         sleep @interval
       end
     end
@@ -131,13 +126,13 @@ module Fluent
     def format_tag(tag, param)
       pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key}
       tag.gsub(/(\${[a-z_]+})/) do
-        $log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
+        log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
     end
 
     def emit_record(tag, record)
-      router.emit(tag, Engine.now, record)
+      router.emit(tag, Fluent::Engine.now, record)
     end
 
     def query(query, con = nil)
@@ -146,7 +141,7 @@ module Fluent
         con = con.ping ? con : get_connection
         return con.query(query), con
       rescue Exception => e
-        $log.warn "mysql_replicator: #{e}"
+        log.warn "mysql_replicator: #{e}"
         sleep @interval
         retry
       end
@@ -166,7 +161,7 @@ module Fluent
           :cache_rows => false
         })
       rescue Exception => e
-        $log.warn "mysql_replicator: #{e}"
+        log.warn "mysql_replicator: #{e}"
         sleep @interval
         retry
       end
