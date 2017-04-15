@@ -6,7 +6,7 @@ It is a guide to replicate multiple mysql table to elasticsearch.
 
 ```
 <source>
-  type mysql_replicator_multi
+  @type mysql_replicator_multi
 
   # Database connection setting for manager table.
   manager_host localhost
@@ -22,7 +22,7 @@ It is a guide to replicate multiple mysql table to elasticsearch.
 </source>
 
 <match replicator.**>
-  type mysql_replicator_elasticsearch
+  @type mysql_replicator_elasticsearch
 
   # Set Elasticsearch connection.
   host localhost

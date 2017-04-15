@@ -6,7 +6,7 @@ It is a guide to replicate single mysql table to solr.
 
 ```
 <source>
-  type mysql_replicator
+  @type mysql_replicator
 
   # Set connection settings for replicate source.
   host localhost
@@ -31,7 +31,7 @@ It is a guide to replicate single mysql table to solr.
 </source>
 
 <match replicator.**>
-  type mysql_replicator_solr
+  @type mysql_replicator_solr
 
   # Set Solr connection.
   host localhost
@@ -60,7 +60,7 @@ On this case, the solr url will be set `http://localhost:8983/solr`
 
 ```
 <match replicator.**>
-  type mysql_replicator_solr
+  @type mysql_replicator_solr
 
   # Set Solr connection.
   host localhost

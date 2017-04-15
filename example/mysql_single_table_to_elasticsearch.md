@@ -6,7 +6,7 @@ It is a guide to replicate single mysql table to elasticsearch.
 
 ```
 <source>
-  type mysql_replicator
+  @type mysql_replicator
 
   # Set connection settings for replicate source.
   host localhost
@@ -31,7 +31,7 @@ It is a guide to replicate single mysql table to elasticsearch.
 </source>
 
 <match replicator.**>
-  type mysql_replicator_elasticsearch
+  @type mysql_replicator_elasticsearch
 
   # Set Elasticsearch connection.
   host localhost

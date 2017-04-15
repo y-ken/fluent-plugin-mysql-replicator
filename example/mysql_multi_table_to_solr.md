@@ -6,7 +6,7 @@ It is a guide to replicate multiple mysql table to solr.
 
 ```
 <source>
-  type mysql_replicator_multi
+  @type mysql_replicator_multi
 
   # Database connection setting for manager table.
   manager_host localhost
@@ -22,7 +22,7 @@ It is a guide to replicate multiple mysql table to solr.
 </source>
 
 <match replicator.**>
-  type mysql_replicator_solr
+  @type mysql_replicator_solr
 
   # Set Solr connection.
   host localhost
@@ -50,7 +50,7 @@ When you use default core (won't specify), change the value of `tag_format` like
 
 ```
 <match replicator.**>
-  type mysql_replicator_solr
+  @type mysql_replicator_solr
 
   # Set Solr connection.
   host localhost
