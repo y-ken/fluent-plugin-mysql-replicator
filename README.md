@@ -6,6 +6,13 @@ Fluentd input plugin to track insert/update/delete event from MySQL database ser
 Not only that, it could multiple table replication into single or multi Elasticsearch/Solr.  
 It's comming support replicate to another RDB/noSQL.
 
+## Requirements
+
+| fluent-plugin-mysql-replicator | fluentd    | ruby   |
+|--------------------|------------|--------|
+|  0.6.0            | v0.14.x | >= 2.1 |
+|  0.6.0            | v0.12.x | >= 1.9 |
+
 ## Installation
 
 install with gem or fluent-gem command as:
