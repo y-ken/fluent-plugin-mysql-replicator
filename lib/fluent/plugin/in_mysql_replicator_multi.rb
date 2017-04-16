@@ -7,7 +7,6 @@ module Fluent
     def initialize
       require 'mysql2'
       require 'digest/sha1'
-      super
     end
 
     config_param :manager_host, :string, :default => 'localhost'
