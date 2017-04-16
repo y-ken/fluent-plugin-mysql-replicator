@@ -13,6 +13,18 @@ It's comming support replicate to another RDB/noSQL.
 |  0.6.1            | v0.14.x | >= 2.1 |
 |  0.6.1            | v0.12.x | >= 1.9 |
 
+## Dependency
+
+before use, install dependent library as:
+
+```bash
+# for RHEL/CentOS
+$ sudo yum group install "Development Tools"
+
+# for Ubuntu/Debian
+$ sudo apt-get install build-essential
+```
+
 ## Installation
 
 install with gem or fluent-gem command as:
