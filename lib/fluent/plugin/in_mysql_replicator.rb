@@ -1,14 +1,12 @@
-require 'fluent/input'
+require 'mysql2'
+require 'digest/sha1'
+require 'fluent/plugin/input'
 
-module Fluent
-  class MysqlReplicatorInput < Fluent::Input
-    Plugin.register_input('mysql_replicator', self)
+module Fluent::Plugin
+  class MysqlReplicatorInput < Fluent::Plugin::Input
+    Fluent::Plugin.register_input('mysql_replicator', self)
 
-    def initialize
-      require 'mysql2'
-      require 'digest/sha1'
-      super
-    end
+    helpers :thread
 
     config_param :host, :string, :default => 'localhost'
     config_param :port, :integer, :default => 3306
@@ -25,7 +23,7 @@ module Fluent
 
     def configure(conf)
       super
-      @interval = Config.time_value(@interval)
+      @interval = Fluent::Config.time_value(@interval)
 
       if @tag.nil?
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
@@ -35,11 +33,12 @@ module Fluent
     end
 
     def start
-      @thread = Thread.new(&method(:run))
+      super
+      thread_create(:in_mysql_replicator_runner, &method(:run))
     end
 
     def shutdown
-      Thread.kill(@thread)
+     super
     end
 
     def run
@@ -107,7 +106,7 @@ module Fluent
           end
           if deleted_ids.count > 0
             hash_delete_by_list(table_hash, deleted_ids)
-            deleted_ids.each do |id| 
+            deleted_ids.each do |id|
               tag = format_tag(@tag, {:event => :delete})
               emit_record(tag, {@primary_key => id})
             end
