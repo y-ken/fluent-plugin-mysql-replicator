@@ -1,8 +1,13 @@
 require 'net/http'
 require 'date'
+require 'fluent/plugin/output'
 
-class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
+class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Output
   Fluent::Plugin.register_output('mysql_replicator_elasticsearch', self)
+
+  DEFAULT_BUFFER_TYPE = "memory"
+
+  helpers :compat_parameters
 
   config_param :host, :string,  :default => 'localhost'
   config_param :port, :integer, :default => 9200
@@ -10,6 +15,10 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
   config_param :ssl, :bool, :default => false
   config_param :username, :string, :default => nil
   config_param :password, :string, :default => nil, :secret => true
+
+  config_section :buffer do
+    config_set_default :@type, DEFAULT_BUFFER_TYPE
+  end
 
   DEFAULT_TAG_FORMAT = /(?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
 
@@ -37,6 +46,14 @@ class Fluent::MysqlReplicatorElasticsearchOutput < Fluent::BufferedOutput
 
   def shutdown
     super
+  end
+
+  def multi_workers_ready?
+    true
+  end
+
+  def formatted_to_msgpack_binary?
+    true
   end
 
   def write(chunk)
