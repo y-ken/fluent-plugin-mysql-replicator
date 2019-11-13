@@ -10,8 +10,8 @@ It's comming support replicate to another RDB/noSQL.
 
 | fluent-plugin-mysql-replicator | fluentd    | ruby   |
 |--------------------|------------|--------|
-|  0.6.1            | v0.14.x | >= 2.1 |
-|  0.6.1            | v0.12.x | >= 1.9 |
+|  >= 0.6.1          | >= v0.14.x | >= 2.1 |
+|  <= 0.6.1          | >= v0.12.x | >= 1.9 |
 
 ## Dependency
 
