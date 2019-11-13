@@ -1,8 +1,8 @@
 require 'fluent/input'
 
-module Fluent
+module Fluent::Plugin
   class MysqlReplicatorMultiInput < Fluent::Input
-    Plugin.register_input('mysql_replicator_multi', self)
+    Fluent::Plugin.register_input('mysql_replicator_multi', self)
 
     def initialize
       require 'mysql2'
@@ -28,18 +28,19 @@ module Fluent
     end
 
     def start
+      super
       begin
         @threads = []
         @mutex = Mutex.new
         @manager_db = get_manager_connection
         @manager_db.query("SET SESSION wait_timeout=1800;")
-        @threads << Thread.new {
+        @threads << thread_create(:in_mysql_replicator_flusher) {
           @hash_table_bulk_insert = []
           @hash_table_bulk_insert_last_time = Time.now
           hash_table_flusher
         }
-        get_settings.each do |config|
-          @threads << Thread.new {
+        get_settings.each_with_index do |config, idx|
+          @threads << thread_create(:"in_mysql_replicator_pollers_#{idx}") {
             poll(config)
           }
         end
@@ -51,9 +52,7 @@ module Fluent
     end
 
     def shutdown
-      @threads.each do |thread|
-        Thread.kill(thread)
-      end
+      super
     end
 
     def get_settings

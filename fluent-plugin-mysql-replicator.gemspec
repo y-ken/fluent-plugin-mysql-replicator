@@ -19,7 +19,7 @@ Gem::Specification.new do |s|
   s.add_development_dependency "webmock", "~> 1.24.0"
   s.add_development_dependency "test-unit", ">= 3.1.0"
 
-  s.add_runtime_dependency "fluentd", [">= 0.10.58", "< 2"]
+  s.add_runtime_dependency "fluentd", [">= 0.14.15", "< 2"]
   s.add_runtime_dependency "mysql2"
   s.add_runtime_dependency "rsolr"
 end

@@ -1,4 +1,5 @@
 require 'helper'
+require 'fluent/test/driver/output'
 
 class MysqlReplicatorSolrOutput < Test::Unit::TestCase
 
@@ -12,8 +13,8 @@ class MysqlReplicatorSolrOutput < Test::Unit::TestCase
     tag_format (?<core_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
   ]
 
-  def create_driver(conf=CONFIG,tag='test')
-    Fluent::Test::OutputTestDriver.new(Fluent::MysqlReplicatorSolrOutput, tag).configure(conf)
+  def create_driver(conf=CONFIG)
+    Fluent::Test::Driver::Output.new(Fluent::Plugin::MysqlReplicatorSolrOutput).configure(conf)
   end
 
   def test_configure

@@ -1,4 +1,5 @@
 require 'helper'
+require 'fluent/test/driver/input'
 
 class MysqlReplicatorInputTest < Test::Unit::TestCase
   def setup
@@ -14,8 +15,8 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     record_hostname yes
   ]
 
-  def create_driver(conf=CONFIG,tag='test')
-    Fluent::Test::OutputTestDriver.new(Fluent::MysqlReplicatorInput, tag).configure(conf)
+  def create_driver(conf=CONFIG)
+    Fluent::Test::Driver::Input.new(Fluent::Plugin::MysqlReplicatorInput).configure(conf)
   end
 
   def test_configure

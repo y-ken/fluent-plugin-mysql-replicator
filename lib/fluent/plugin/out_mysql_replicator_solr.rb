@@ -1,12 +1,21 @@
 require 'rsolr'
 require 'uri'
+require 'fluent/plugin/output'
 
-class Fluent::MysqlReplicatorSolrOutput < Fluent::BufferedOutput
+class Fluent::Plugin::MysqlReplicatorSolrOutput < Fluent::Plugin::Output
   Fluent::Plugin.register_output('mysql_replicator_solr', self)
+
+  DEFAULT_BUFFER_TYPE = "memory"
+
+  helpers :compat_parameters
 
   config_param :host, :string,  :default => 'localhost'
   config_param :port, :integer, :default => 8983
   config_param :tag_format, :string, :default => nil
+
+  config_section :buffer do
+    config_set_default :@type, DEFAULT_BUFFER_TYPE
+  end
 
   DEFAULT_TAG_FORMAT = /(?<core_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$/
 
@@ -34,6 +43,14 @@ class Fluent::MysqlReplicatorSolrOutput < Fluent::BufferedOutput
 
   def shutdown
     super
+  end
+
+  def multi_workers_ready?
+    true
+  end
+
+  def formatted_to_msgpack_binary?
+    true
   end
 
   def write(chunk)
