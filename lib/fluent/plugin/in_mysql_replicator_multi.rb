@@ -106,6 +106,9 @@ module Fluent
             rows_count += 1
           end
           db.close
+          unless config['prepared_query'].nil?
+            nest_db.close
+          end
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
             log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
