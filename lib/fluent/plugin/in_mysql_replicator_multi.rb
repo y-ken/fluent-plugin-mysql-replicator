@@ -1,8 +1,10 @@
-require 'fluent/input'
+require 'fluent/plugin/input'
 
 module Fluent::Plugin
-  class MysqlReplicatorMultiInput < Fluent::Input
+  class MysqlReplicatorMultiInput < Fluent::Plugin::Input
     Fluent::Plugin.register_input('mysql_replicator_multi', self)
+
+    helpers :thread
 
     def initialize
       require 'mysql2'
@@ -34,6 +36,7 @@ module Fluent::Plugin
         @mutex = Mutex.new
         @manager_db = get_manager_connection
         @manager_db.query("SET SESSION wait_timeout=1800;")
+        @running = true
         @threads << thread_create(:in_mysql_replicator_flusher) {
           @hash_table_bulk_insert = []
           @hash_table_bulk_insert_last_time = Time.now
@@ -51,7 +54,13 @@ module Fluent::Plugin
       end
     end
 
+    def stop
+      @running = false
+      super
+    end
+
     def shutdown
+      @threads.each(&:join)
       super
     end
 
@@ -73,7 +82,7 @@ module Fluent::Plugin
         }
         primary_key = config['primary_key']
         previous_id = current_id = nil
-        loop do
+        while @running
           rows_count = 0
           start_time = Time.now
           unless config['prepared_query'].nil?
@@ -214,7 +223,7 @@ module Fluent::Plugin
 
     def hash_table_flusher
       begin
-        loop do
+        while @running
           if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
             sleep @bulk_insert_timeout
             next
@@ -223,6 +232,9 @@ module Fluent::Plugin
             flush_hash_table
           }
         end
+        @mutex.synchronize {
+          flush_hash_table
+        }
       rescue StandardError => e
         @mutex.synchronize {
           log.error "mysql_replicator_multi: failed to flush buffered query. :config=>#{masked_config}"
