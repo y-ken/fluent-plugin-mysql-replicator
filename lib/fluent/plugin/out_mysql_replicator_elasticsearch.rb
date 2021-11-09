@@ -88,6 +88,11 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     end
 
     request.body = bulk_message.join("\n")
+
+    request.body.gsub!(/\\"/, '"')
+    request.body.gsub!(/\"{/, '{')
+    request.body.gsub!(/}\"/, '}')
+
     http.request(request).value
   end
 end
