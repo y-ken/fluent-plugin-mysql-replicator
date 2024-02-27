@@ -31,13 +31,13 @@ install with gem or fluent-gem command as:
 
 `````
 # for system installed fluentd
-$ gem install fluent-plugin-mysql-replicator -v 1.0.2
+$ gem install fluent-plugin-mysql-replicator -v 1.0.3
 
 # for td-agent2
 $ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 0.6.1
 
 # for td-agent3
-$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 1.0.2
+$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 1.0.3
 `````
 
 ## Included plugins
