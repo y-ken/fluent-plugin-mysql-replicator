@@ -85,37 +85,49 @@ module Fluent::Plugin
         while @running
           rows_count = 0
           start_time = Time.now
-          unless config['prepared_query'].nil?
-            nest_db = get_origin_connection(config)
-            config['prepared_query'].strip.split(/;/).each do |query|
-              nest_db.query(query)
-            end
-          end
-          db = get_origin_connection(config)
-          db.query(config['query']).each do |row|
-            row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-            row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
-              row[k] = [] unless row[k].is_a?(Array)
-              nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
-                nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-                row[k] << nest_row
+          db = nil
+          nest_db = nil
+          begin
+            unless config['prepared_query'].nil?
+              nest_db = get_origin_connection(config)
+              config['prepared_query'].strip.split(/;/).each do |query|
+                nest_db.query(query)
               end
             end
-            current_id = row[primary_key]
+            db = get_origin_connection(config)
+            db.query(config['query']).each do |row|
+              row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+              row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
+                row[k] = [] unless row[k].is_a?(Array)
+                nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
+                  nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+                  row[k] << nest_row
+                end
+              end
+              current_id = row[primary_key]
+              @mutex.synchronize {
+                if row[primary_key].nil?
+                  log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
+                  break
+                end
+                detect_insert_update(config, row)
+                detect_delete(config, current_id, previous_id)
+              }
+              previous_id = current_id
+              rows_count += 1
+            end
+          rescue Mysql2::Error => e
+            raise e unless config['enable_retry'] == 1
+
             @mutex.synchronize {
-              if row[primary_key].nil?
-                log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
-                break
-              end
-              detect_insert_update(config, row)
-              detect_delete(config, current_id, previous_id)
+              log.error "mysql_replicator_multi: failed due to an error caused by the database. :setting_name=>#{config['name']}"
+              log.error "error: #{e.message}"
+              log.error e.backtrace.join("\n")
             }
-            previous_id = current_id
-            rows_count += 1
-          end
-          db.close
-          unless config['prepared_query'].nil?
-            nest_db.close
+            sleep config['retry_interval']
+          ensure
+            db.close if db
+            nest_db.close if nest_db && !config['prepared_query'].nil?
           end
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
@@ -290,7 +302,11 @@ module Fluent::Plugin
           :cache_rows => false
         )
       rescue Mysql2::Error => e
-        raise "mysql_replicator_multi: #{e}"
+        if config['enable_retry'] == 1
+          raise e
+        else
+          raise "mysql_replicator_multi: #{e}"
+        end
       end
     end
   end

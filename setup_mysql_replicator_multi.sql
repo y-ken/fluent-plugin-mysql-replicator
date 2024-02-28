@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `enable_loose_insert` int(11) DEFAULT '0',
   -- On enabling 'enable_loose_delete: 1', turn on speculative delete but performance penalty on non-contiguous primary key.
   `enable_loose_delete` int(11) DEFAULT '0',
+  -- On enabling 'enable_retry: 1', automatically retries when an error occurs due to MySQL.
+  `enable_retry` int(11) DEFAULT '1',
+  -- Additional interval when retrying. If not set, waits for the time set in the regular interval column.
+  `retry_interval` int(11) NOT NULL DEFAULT '30',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
