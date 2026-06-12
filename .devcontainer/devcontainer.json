@@ -1,0 +1,16 @@
+{
+  "name": "fluent-plugin-mysql-replicator",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash"
+  },
+  "extensions": [
+    "rebornix.Ruby"
+  ],
+  "postCreateCommand": "bundle config set --local path \"$BUNDLE_PATH\" && bundle install --jobs 4 --retry 3",
+  "remoteUser": "root"
+}

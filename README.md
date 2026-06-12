@@ -40,6 +40,24 @@ $ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 0.6.1
 $ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 1.0.3
 `````
 
+## Development container
+
+This repository includes a VS Code Dev Container configuration under `.devcontainer/`.
+Use Docker and Remote Containers / Dev Containers in VS Code to build and open the workspace inside a container.
+The container installs Ruby, Bundler, and required native build dependencies.
+
+After opening the repository in the Dev Container, run:
+
+```
+bundle install --path vendor/bundle
+```
+
+Then run tests like:
+
+```
+bundle exec ruby -Itest test/plugin/test_out_mysql_replicator_elasticsearch.rb
+```
+
 ## Included plugins
 
 * Input Plugin: mysql_replicator
