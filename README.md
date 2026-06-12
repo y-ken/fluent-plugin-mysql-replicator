@@ -1,4 +1,4 @@
-# fluent-plugin-mysql-replicator [![Build Status](https://travis-ci.org/y-ken/fluent-plugin-mysql-replicator.png?branch=master)](https://travis-ci.org/y-ken/fluent-plugin-mysql-replicator)
+# fluent-plugin-mysql-replicator [![CI](https://github.com/y-ken/fluent-plugin-mysql-replicator/actions/workflows/ci.yml/badge.svg)](https://github.com/y-ken/fluent-plugin-mysql-replicator/actions/workflows/ci.yml)
 
 ## Overview
 
