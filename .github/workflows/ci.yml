@@ -78,5 +78,8 @@ jobs:
           done
           echo "Elasticsearch did not become ready"; exit 1
 
-      - name: Run replication E2E test
-        run: bundle exec ruby test/e2e/replication_e2e_test.rb
+      - name: Run single-table replication E2E test
+        run: bundle exec ruby test/e2e/replication_single_e2e_test.rb
+
+      - name: Run multi-table replication E2E test
+        run: bundle exec ruby test/e2e/replication_multi_e2e_test.rb

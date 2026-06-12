@@ -3,4 +3,4 @@
 Gemfile.lock
 pkg/*
 vendor/*
-test/e2e/fluentd.log
+test/e2e/*.log
