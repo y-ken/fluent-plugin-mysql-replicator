@@ -65,6 +65,15 @@ bundle exec ruby -Itest test/plugin/test_out_mysql_replicator_elasticsearch.rb
 * Output Plugin: mysql_replicator_elasticsearch
 * Output Plugin: mysql_replicator_solr (experimental)
 
+## Elasticsearch version compatibility
+
+`mysql_replicator_elasticsearch` works with Elasticsearch 6.x through 9.x.
+
+Mapping types were removed in Elasticsearch 8.x (and deprecated in 7.x), so the
+`_type` field can no longer be sent in bulk requests. The plugin detects the
+Elasticsearch version on the first write and automatically omits `_type` for
+7.x and later, so no extra configuration is required.
+
 ## Output example
 
 It is a example when detecting insert/update/delete events.

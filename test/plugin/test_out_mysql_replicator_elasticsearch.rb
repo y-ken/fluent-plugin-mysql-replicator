@@ -21,7 +21,18 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     {'age' => 26, 'request_id' => '42'}
   end
 
+  # The plugin detects the Elasticsearch version on the first write via GET /,
+  # so stub that endpoint (defaulting to 6.x, which keeps "_type").
+  def stub_elastic_version(url, version="6.8.23")
+    stub_request(:get, url).to_return(
+      :status => 200,
+      :headers => {"Content-Type" => "application/json"},
+      :body => %({"version":{"number":"#{version}"}})
+    )
+  end
+
   def stub_elastic(url="http://localhost:9200/_bulk")
+    stub_elastic_version(url.sub('/_bulk', '/'))
     stub_request(:post, url).with do |req|
       @content_type = req.headers["Content-Type"]
       @index_cmds = req.body.split("\n").map {|r| JSON.parse(r) }
@@ -29,6 +40,7 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
   end
 
   def stub_elastic_unavailable(url="http://localhost:9200/_bulk")
+    stub_elastic_version(url.sub('/_bulk', '/'))
     stub_request(:post, url).to_return(:status => [503, "Service Unavailable"])
   end
 
@@ -56,6 +68,16 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
       driver.feed(sample_record)
     end
     assert_equal('mytype', index_cmds.first['index']['_type'])
+  end
+
+  def test_auto_detects_es8_and_omits_type
+    stub_elastic
+    # Override the version endpoint to report Elasticsearch 8.x.
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+    end
+    assert(!index_cmds.first['index'].has_key?('_type'))
   end
 
   def test_writes_to_speficied_host
