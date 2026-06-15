@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit tests (Ruby ${{ matrix.ruby }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.2', '3.3', '3.4', '4.0']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install MySQL client headers
+        run: sudo apt-get update && sudo apt-get install -y default-libmysqlclient-dev
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rake test
+
+  e2e:
+    name: E2E replication (MySQL -> Elasticsearch)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:6.8.23
+        env:
+          discovery.type: single-node
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 9200:9200
+
+    env:
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      MYSQL_DATABASE: e2e_source
+      ES_HOST: 127.0.0.1
+      ES_PORT: 9200
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MySQL client headers
+        run: sudo apt-get update && sudo apt-get install -y default-libmysqlclient-dev
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Wait for Elasticsearch
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs "http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null; then
+              echo "Elasticsearch is up"; exit 0
+            fi
+            echo "waiting for Elasticsearch ($i)..."; sleep 5
+          done
+          echo "Elasticsearch did not become ready"; exit 1
+
+      - name: Run single-table replication E2E test
+        run: bundle exec ruby test/e2e/replication_single_e2e_test.rb
+
+      - name: Run multi-table replication E2E test
+        run: bundle exec ruby test/e2e/replication_multi_e2e_test.rb

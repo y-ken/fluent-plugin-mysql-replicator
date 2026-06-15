@@ -1,5 +1,6 @@
 require 'net/http'
 require 'date'
+require 'yajl'
 require 'fluent/plugin/output'
 
 class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Output
