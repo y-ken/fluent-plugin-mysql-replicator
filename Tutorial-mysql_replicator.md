@@ -8,6 +8,26 @@ It is useful for these purpose.
 **Note:**  
 On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
 
+### How it works
+
+`mysql_replicator` does **not** rely on any `updated_at`/timestamp column to
+detect changes. On every `interval`, it re-runs the configured `query`, computes
+a hash for each returned row, and keeps an **in-memory hash table of every row**
+(keyed by `primary_key`) to compare against the previous run:
+
+* a row whose `primary_key` was not seen before → `insert` event
+* a row whose hash changed since the previous run → `update` event
+* a `primary_key` that disappeared from the result set → `delete` event (when `enable_delete yes`)
+
+Because the whole result set is held in memory, this plugin is best suited for
+small-to-medium tables. For millions of rows or multiple tables, prefer
+[`mysql_replicator_multi`](Tutorial-mysql_replicator_multi.md), which stores the
+hash table in a MySQL management table instead of Ruby memory.
+
+The `updated_at` column is therefore not required. It only becomes useful if you
+intentionally narrow the `query` to recently changed rows together with
+`enable_delete no`, as shown in the `enable_delete` comment below.
+
 ### configuration
 
 `````
@@ -21,7 +41,7 @@ On syncing 300 million rows table, it will consume around 800MB of memory with r
   database myweb
 
   # Set replicate query configuration.
-  query SELECT id, text, updated_at from search_test;
+  query SELECT id, text from search_test;
   primary_key id # specify unique key (default: id)
   interval 10s  # execute query interval (default: 1m)
 
