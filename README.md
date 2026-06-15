@@ -15,14 +15,28 @@ It's comming support replicate to another RDB/noSQL.
 
 ## Dependency
 
-before use, install dependent library as:
+This plugin depends on the [mysql2](https://rubygems.org/gems/mysql2) gem, which
+builds a native extension at install time. You need both a C compiler toolchain
+**and the MySQL client development headers** before installing.
 
 ```bash
-# for RHEL/CentOS
+# for RHEL/CentOS/Fedora
 $ sudo yum group install "Development Tools"
+$ sudo yum install mysql-devel        # or mariadb-devel
 
-# for Ubuntu/Debian
-$ sudo apt-get install build-essential
+# for Ubuntu/Debian (including the official fluent/fluentd Docker image)
+$ sudo apt-get install build-essential default-libmysqlclient-dev
+```
+
+### Troubleshooting: "Failed to build gem native extension"
+
+If `gem install` (or `td-agent-gem install`) fails while building the `mysql2`
+native extension, the MySQL client headers are almost always missing. Install
+the development package for your platform shown above, then retry the
+installation. On the official `fluent/fluentd:*-debian` images, run:
+
+```bash
+$ apt-get update && apt-get install -y build-essential default-libmysqlclient-dev
 ```
 
 ## Installation
