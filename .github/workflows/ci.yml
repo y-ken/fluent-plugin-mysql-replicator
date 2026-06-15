@@ -100,3 +100,33 @@ jobs:
 
       - name: Run multi-table replication E2E test
         run: bundle exec ruby test/e2e/replication_multi_e2e_test.rb
+
+  install-smoke:
+    name: Install smoke (fluentd ${{ matrix.fluentd_tag }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # An older line close to the originally reported image (#43 used
+        # v1.15-debian) plus the moving "edge" tag to catch future drift.
+        fluentd_tag: ['v1.16-debian', 'edge-debian']
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Build gem
+        run: |
+          mkdir -p pkg
+          gem build fluent-plugin-mysql-replicator.gemspec -o pkg/fluent-plugin-mysql-replicator.gem
+
+      - name: Install on official fluentd image (reproduces README steps)
+        run: |
+          docker run --rm --user root --entrypoint sh \
+            -v "${{ github.workspace }}:/workspace:ro" \
+            "fluent/fluentd:${{ matrix.fluentd_tag }}" \
+            /workspace/ci/install_smoke.sh
