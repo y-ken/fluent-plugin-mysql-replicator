@@ -101,16 +101,17 @@ jobs:
       - name: Run multi-table replication E2E test
         run: bundle exec ruby test/e2e/replication_multi_e2e_test.rb
 
-  install-smoke:
-    name: Install smoke (fluentd ${{ matrix.fluentd_tag }})
+  # Container path: the official fluent/fluentd Docker image (gem-based).
+  install-smoke-docker:
+    name: Install smoke (Docker fluent/fluentd ${{ matrix.fluentd_tag }})
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        # An older line close to the originally reported image (#43 used
-        # v1.15-debian) plus the moving "edge" tag to catch future drift.
-        fluentd_tag: ['v1.16-debian', 'edge-debian']
+        # "edge" tracks the latest Fluentd release to catch drift early. The
+        # packaged-distribution path is covered by install-smoke-fluent-package.
+        fluentd_tag: ['edge-debian']
 
     steps:
       - uses: actions/checkout@v5
@@ -130,3 +131,35 @@ jobs:
             -v "${{ github.workspace }}:/workspace:ro" \
             "fluent/fluentd:${{ matrix.fluentd_tag }}" \
             /workspace/ci/install_smoke.sh
+
+  # Package path: fluent-package, the LTS distribution that replaced td-agent
+  # and is what most production users run today. v6 LTS bundles Fluentd v1.19.
+  install-smoke-fluent-package:
+    name: Install smoke (fluent-package v6 LTS)
+    runs-on: ubuntu-latest  # GitHub's ubuntu-latest is Ubuntu 24.04 (Noble)
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Build gem
+        run: |
+          mkdir -p pkg
+          gem build fluent-plugin-mysql-replicator.gemspec -o pkg/fluent-plugin-mysql-replicator.gem
+
+      - name: Install fluent-package v6 LTS
+        run: |
+          curl -fsSL https://fluentd.cdn.cncf.io/sh/install-ubuntu-noble-fluent-package6-lts.sh | sh
+          /opt/fluent/bin/fluentd --version
+
+      - name: Install MySQL client headers
+        run: sudo apt-get update && sudo apt-get install -y build-essential default-libmysqlclient-dev
+
+      - name: Install plugin via fluent-gem and verify it loads
+        run: |
+          sudo /opt/fluent/bin/fluent-gem install pkg/fluent-plugin-mysql-replicator.gem
+          sudo /opt/fluent/bin/fluent-gem list fluent-plugin-mysql-replicator
+          /opt/fluent/bin/ruby ci/verify_plugins_load.rb

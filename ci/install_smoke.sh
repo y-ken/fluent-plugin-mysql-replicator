@@ -16,4 +16,4 @@ apt-get install -y build-essential default-libmysqlclient-dev
 gem install "$GEM_FILE"
 
 # Confirm the installed plugins (and the mysql2 native extension) load at runtime.
-ruby -e 'require "fluent/plugin/in_mysql_replicator"; require "fluent/plugin/in_mysql_replicator_multi"; puts "input plugins loaded; mysql2 native extension OK"'
+ruby "$(dirname "$0")/verify_plugins_load.rb"
