@@ -1,5 +1,6 @@
 require 'mysql2'
 require 'digest/sha1'
+require 'json'
 require 'fluent/plugin/input'
 
 module Fluent::Plugin
@@ -19,6 +20,10 @@ module Fluent::Plugin
     config_param :primary_key, :string, :default => 'id'
     config_param :interval, :string, :default => '1m'
     config_param :enable_delete, :bool, :default => true
+    # Comma-separated column names whose MySQL JSON values should be parsed into
+    # nested objects before emitting. Intended for Elasticsearch; do not set it
+    # when the destination cannot store JSON objects (e.g. Solr).
+    config_param :json_columns, :array, :default => []
     config_param :tag, :string, :default => nil
 
     def configure(conf)
@@ -29,7 +34,7 @@ module Fluent::Plugin
         raise Fluent::ConfigError, "mysql_replicator: missing 'tag' parameter. Please add following line into config like 'tag replicator.mydatabase.mytable.${event}.${primary_key}'"
       end
 
-      log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :prepared_query=>#{@prepared_query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete}"
+      log.info "adding mysql_replicator worker. :tag=>#{tag} :query=>#{@query} :prepared_query=>#{@prepared_query} :interval=>#{@interval}sec :enable_delete=>#{enable_delete} :json_columns=>#{@json_columns}"
     end
 
     def start
@@ -71,6 +76,7 @@ module Fluent::Plugin
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+          parse_json_columns!(row, @json_columns)
           row.select {|k, v| nested_query_value?(v) }.each do |k, v|
             row[k] = [] unless row[k].is_a?(Array)
             nest_rows, prepared_con = query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s), prepared_con)
@@ -127,6 +133,22 @@ module Fluent::Plugin
       return [] if previous_ids.empty?
       return [] if current_ids.empty?
       previous_ids - current_ids
+    end
+
+    # Parse the given columns' JSON string values into nested objects in place.
+    # Non-string values, missing columns, and malformed JSON are left untouched
+    # so enabling this never corrupts non-JSON data.
+    def parse_json_columns!(row, columns)
+      return if columns.empty?
+      columns.each do |col|
+        v = row[col]
+        next unless v.is_a?(String)
+        begin
+          row[col] = JSON.parse(v)
+        rescue JSON::ParserError
+          # leave the original string as-is on malformed JSON
+        end
+      end
     end
 
     def format_tag(tag, param)

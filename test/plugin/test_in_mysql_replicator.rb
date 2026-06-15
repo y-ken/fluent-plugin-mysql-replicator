@@ -30,12 +30,45 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
       tag             input.mysql
       query           SELECT id, text from search_text
       enable_delete   no
+      json_columns    geometry,attrs
     ]
     assert_equal 'localhost', d.instance.host
     assert_equal 3306, d.instance.port
     assert_equal 30, d.instance.interval
     assert_equal 'input.mysql', d.instance.tag
     assert_equal false, d.instance.enable_delete
+    assert_equal ['geometry', 'attrs'], d.instance.json_columns
+  end
+
+  def test_json_columns_defaults_to_empty
+    d = create_driver
+    assert_equal [], d.instance.json_columns
+  end
+
+  def test_parse_json_columns
+    d = create_driver
+    row = {
+      'id'       => 1,
+      'geometry' => '{"type":"Polygon","coordinates":[[136.8,35.1]]}',
+      'tags'     => '[1,2,3]',
+      'broken'   => 'not json {',
+      'plain'    => 'hello',
+      'number'   => 5,
+    }
+    d.instance.parse_json_columns!(row, ['geometry', 'tags', 'broken', 'number', 'missing'])
+
+    assert_equal({'type' => 'Polygon', 'coordinates' => [[136.8, 35.1]]}, row['geometry'])
+    assert_equal([1, 2, 3], row['tags'])
+    assert_equal('not json {', row['broken'])  # malformed JSON stays as the original string
+    assert_equal(5, row['number'])             # non-string values are untouched
+    assert_equal('hello', row['plain'])        # columns not listed are untouched
+  end
+
+  def test_parse_json_columns_noop_when_empty
+    d = create_driver
+    row = {'geometry' => '{"a":1}'}
+    d.instance.parse_json_columns!(row, [])
+    assert_equal('{"a":1}', row['geometry'])
   end
 
   # --- #42: delete detection must not build an integer Range from primary keys ---

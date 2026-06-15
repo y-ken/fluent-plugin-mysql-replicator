@@ -9,6 +9,7 @@ module Fluent::Plugin
     def initialize
       require 'mysql2'
       require 'digest/sha1'
+      require 'json'
       super
     end
 
@@ -81,6 +82,7 @@ module Fluent::Plugin
           log.info "mysql_replicator_multi: polling start. :config=>#{masked_config}"
         }
         primary_key = config['primary_key']
+        json_columns = (config['json_columns'] || '').split(',').map(&:strip).reject(&:empty?)
         previous_id = current_id = nil
         while @running
           rows_count = 0
@@ -97,6 +99,7 @@ module Fluent::Plugin
             db = get_origin_connection(config)
             db.query(config['query']).each do |row|
               row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+              parse_json_columns!(row, json_columns)
               row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
                 row[k] = [] unless row[k].is_a?(Array)
                 nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
@@ -264,6 +267,22 @@ module Fluent::Plugin
       @manager_db.query(query)
       @hash_table_bulk_insert.clear
       @hash_table_bulk_insert_last_time = Time.now
+    end
+
+    # Parse the given columns' JSON string values into nested objects in place.
+    # Non-string values, missing columns, and malformed JSON are left untouched
+    # so enabling this never corrupts non-JSON data.
+    def parse_json_columns!(row, columns)
+      return if columns.empty?
+      columns.each do |col|
+        v = row[col]
+        next unless v.is_a?(String)
+        begin
+          row[col] = JSON.parse(v)
+        rescue JSON::ParserError
+          # leave the original string as-is on malformed JSON
+        end
+      end
     end
 
     def emit_record(tag, record)

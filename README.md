@@ -88,6 +88,40 @@ Mapping types were removed in Elasticsearch 8.x (and deprecated in 7.x), so the
 Elasticsearch version on the first write and automatically omits `_type` for
 7.x and later, so no extra configuration is required.
 
+## JSON column support
+
+MySQL `JSON` columns (MySQL 5.7.8+ / 8.x) are returned by the driver as plain
+strings, so by default they reach Elasticsearch as escaped strings rather than
+nested objects. List such columns in `json_columns` to have their values parsed
+into nested objects before they are emitted.
+
+* `mysql_replicator` (single): set the `json_columns` option (comma-separated).
+
+  ```
+  <source>
+    @type        mysql_replicator
+    # ...
+    query        SELECT id, name, geometry FROM places
+    json_columns geometry,attrs
+  </source>
+  ```
+
+* `mysql_replicator_multi`: set the `json_columns` column (comma-separated) on
+  the relevant row of the `settings` management table. Existing installs can add
+  the column with:
+
+  ```sql
+  ALTER TABLE settings ADD COLUMN `json_columns` varchar(255) DEFAULT NULL AFTER `primary_key`;
+  ```
+
+Notes:
+
+* This option is intended for Elasticsearch. **Do not set it when the destination
+  cannot store JSON objects (e.g. the Solr output)** — leave it empty there.
+* Only top-level columns are parsed (columns inside nested documents are not).
+* Malformed JSON and non-string values are left untouched, so enabling the option
+  never corrupts non-JSON data.
+
 ## Output example
 
 It is a example when detecting insert/update/delete events.

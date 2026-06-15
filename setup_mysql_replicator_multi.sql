@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `prepared_query` TEXT NOT NULL,
   `interval` int(11) NOT NULL,
   `primary_key` varchar(255) DEFAULT 'id',
+  -- Comma-separated column names whose MySQL JSON values should be parsed into nested objects.
+  -- Intended for Elasticsearch; leave empty for Solr or destinations that cannot store JSON objects.
+  `json_columns` varchar(255) DEFAULT NULL,
   `enable_delete` int(11) DEFAULT '1',
   -- On enabling 'enable_loose_insert: 1', make it faster synchronization to skip checking hash_tables.
   `enable_loose_insert` int(11) DEFAULT '0',
