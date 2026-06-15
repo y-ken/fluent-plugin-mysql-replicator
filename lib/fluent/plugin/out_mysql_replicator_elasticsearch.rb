@@ -39,6 +39,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
   def start
     super
+    # nil means "not yet detected"; resolved on the first write.
+    @suppress_type = nil
   end
 
   def format(tag, time, record)
@@ -58,6 +60,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   def write(chunk)
+    detect_type_suppression if @suppress_type.nil?
+
     bulk_message = []
 
     chunk.msgpack_each do |tag, time, record|
@@ -67,21 +71,22 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       id_key = tag_parts['primary_key']
 
       if tag_parts['event'] == 'delete'
-        meta = { "delete" => {"_index" => target_index, "_type" => target_type, "_id" => record[id_key]} }
+        action = {"_index" => target_index, "_id" => record[id_key]}
+        action['_type'] = target_type unless @suppress_type
+        meta = { "delete" => action }
         bulk_message << Yajl::Encoder.encode(meta)
       else
-        meta = { "index" => {"_index" => target_index, "_type" => target_type} }
+        action = {"_index" => target_index}
+        action['_type'] = target_type unless @suppress_type
         if id_key && record[id_key]
-          meta['index']['_id'] = record[id_key]
+          action['_id'] = record[id_key]
         end
+        meta = { "index" => action }
         bulk_message << Yajl::Encoder.encode(meta)
         bulk_message << Yajl::Encoder.encode(record)
       end
     end
     bulk_message << ""
-
-    http = Net::HTTP.new(@host, @port.to_i)
-    http.use_ssl = @ssl
 
     request = Net::HTTP::Post.new('/_bulk', {'content-type' => 'application/json; charset=utf-8'})
     if @username && @password
@@ -89,6 +94,37 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     end
 
     request.body = bulk_message.join("\n")
-    http.request(request).value
+    new_http.request(request).value
+  end
+
+  private
+
+  def new_http
+    http = Net::HTTP.new(@host, @port.to_i)
+    http.use_ssl = @ssl
+    http
+  end
+
+  # Mapping types were removed in Elasticsearch 8.x and deprecated in 7.x.
+  # Detect the major version once and omit "_type" for 7.x and later.
+  def detect_type_suppression
+    major = elasticsearch_major_version
+    @suppress_type = !major.nil? && major >= 7
+    if major
+      log.info "mysql_replicator_elasticsearch: detected Elasticsearch #{major}.x, suppress_type=#{@suppress_type}"
+    else
+      log.warn "mysql_replicator_elasticsearch: could not detect Elasticsearch version, sending '_type' (assuming 6.x)"
+    end
+  end
+
+  def elasticsearch_major_version
+    request = Net::HTTP::Get.new('/')
+    request.basic_auth(@username, @password) if @username && @password
+    response = new_http.request(request)
+    number = Yajl::Parser.parse(response.body).dig('version', 'number')
+    number.to_s.split('.').first.to_i
+  rescue => e
+    log.warn "mysql_replicator_elasticsearch: version detection failed: #{e.message}"
+    nil
   end
 end

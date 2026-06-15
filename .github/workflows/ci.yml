@@ -24,8 +24,23 @@ jobs:
       - run: bundle exec rake test
 
   e2e:
-    name: E2E replication (MySQL -> Elasticsearch)
+    name: E2E replication (ES ${{ matrix.es_label }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The plugin auto-detects the version and adjusts "_type" accordingly.
+          - es_label: '6.8'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:6.8.23
+            es_major: '6'
+          - es_label: '8.x'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
+            es_major: '8'
+          - es_label: '9.x'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+            es_major: '9'
 
     services:
       mysql:
@@ -41,9 +56,10 @@ jobs:
           --health-retries=10
 
       elasticsearch:
-        image: docker.elastic.co/elasticsearch/elasticsearch:6.8.23
+        image: ${{ matrix.es_image }}
         env:
           discovery.type: single-node
+          xpack.security.enabled: 'false'
           ES_JAVA_OPTS: -Xms512m -Xmx512m
         ports:
           - 9200:9200
@@ -56,6 +72,7 @@ jobs:
       MYSQL_DATABASE: e2e_source
       ES_HOST: 127.0.0.1
       ES_PORT: 9200
+      ES_MAJOR_VERSION: ${{ matrix.es_major }}
 
     steps:
       - uses: actions/checkout@v5

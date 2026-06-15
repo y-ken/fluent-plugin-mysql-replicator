@@ -27,9 +27,17 @@ module E2E
     "http://#{ENV['ES_HOST'] || '127.0.0.1'}:#{ENV['ES_PORT'] || '9200'}"
   end
 
+  # Major version of the Elasticsearch under test (defaults to 6).
+  def es_major_version
+    (ENV['ES_MAJOR_VERSION'] || '6').to_i
+  end
+
   # Realtime GET by id. Returns [http_status, parsed_body].
+  # Elasticsearch 7.x+ dropped custom mapping types, so documents are addressed
+  # via the "_doc" endpoint instead of the original type name.
   def es_get(index, type, id)
-    res = Net::HTTP.get_response(URI("#{es_base}/#{index}/#{type}/#{id}"))
+    type_path = es_major_version >= 7 ? '_doc' : type
+    res = Net::HTTP.get_response(URI("#{es_base}/#{index}/#{type_path}/#{id}"))
     [res.code.to_i, (JSON.parse(res.body) rescue {})]
   end
 
