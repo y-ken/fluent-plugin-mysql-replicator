@@ -71,7 +71,7 @@ module Fluent::Plugin
           current_ids << row[@primary_key]
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-          row.select {|k, v| v.to_s.strip.match(/^SELECT(\s+)/i) }.each do |k, v|
+          row.select {|k, v| nested_query_value?(v) }.each do |k, v|
             row[k] = [] unless row[k].is_a?(Array)
             nest_rows, prepared_con = query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s), prepared_con)
             nest_rows.each do |nest_row|
@@ -135,6 +135,15 @@ module Fluent::Plugin
         log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
       end
+    end
+
+    # A column value triggers a nested sub-query only when it is a query
+    # template containing a `${placeholder}` (e.g. "SELECT ... WHERE x = ${id}").
+    # Requiring the placeholder prevents ordinary text values that merely begin
+    # with the word "SELECT" from being executed as SQL. (#4; mirrors the fix
+    # already applied to mysql_replicator_multi in #6.)
+    def nested_query_value?(value)
+      value.to_s.strip.match?(/^SELECT[^\$]+\$\{[^\}]+\}/i)
     end
 
     def emit_record(tag, record)
