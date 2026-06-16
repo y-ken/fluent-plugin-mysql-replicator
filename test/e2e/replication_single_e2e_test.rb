@@ -24,13 +24,18 @@ client.query("CREATE DATABASE `#{DB}`")
 client.query("USE `#{DB}`")
 client.query(<<~SQL)
   CREATE TABLE users (
-    id   INT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    age  INT NOT NULL,
+    id      INT NOT NULL AUTO_INCREMENT,
+    name    VARCHAR(255) NOT NULL,
+    age     INT NOT NULL,
+    profile JSON,
     PRIMARY KEY (id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8
 SQL
-client.query("INSERT INTO users (name, age) VALUES ('alice', 20), ('bob', 30)")
+client.query(<<~SQL)
+  INSERT INTO users (name, age, profile) VALUES
+    ('alice', 20, '{"city":"Tokyo","tags":["a","b"]}'),
+    ('bob',   30, '{"city":"Osaka","tags":["c"]}')
+SQL
 
 # --- 2. Boot Fluentd --------------------------------------------------------
 step "starting Fluentd (#{CONF})"
@@ -48,6 +53,18 @@ begin
     code == 200 && body.dig('_source', 'name') == 'bob'
   end
   step "  INSERT OK"
+
+  # --- 3b. JSON column is indexed as a nested object (not an escaped string) -
+  step "asserting JSON column is replicated as a nested object"
+  wait_until("user 1 profile.city == Tokyo in Elasticsearch", log_path: LOG_PATH) do
+    code, body = es_get(INDEX, TYPE, 1)
+    code == 200 && body.dig('_source', 'profile', 'city') == 'Tokyo'
+  end
+  _, body = es_get(INDEX, TYPE, 1)
+  unless body.dig('_source', 'profile', 'tags') == ['a', 'b']
+    fail_with("profile was not indexed as a nested object: #{body.dig('_source', 'profile').inspect}", LOG_PATH)
+  end
+  step "  JSON OK"
 
   # --- 4. UPDATE is replicated ----------------------------------------------
   step "asserting UPDATE replication"

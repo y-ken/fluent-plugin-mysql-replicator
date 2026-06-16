@@ -1,4 +1,4 @@
-FROM ruby:3.3-slim
+FROM ruby:3.4-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV BUNDLE_PATH=/workspace/vendor/bundle

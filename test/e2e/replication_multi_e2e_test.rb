@@ -41,13 +41,19 @@ client.query("CREATE DATABASE `#{SOURCE_DB}`")
 client.query("USE `#{SOURCE_DB}`")
 client.query(<<~SQL)
   CREATE TABLE users (
-    id   INT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    age  INT NOT NULL,
+    id      INT NOT NULL AUTO_INCREMENT,
+    name    VARCHAR(255) NOT NULL,
+    age     INT NOT NULL,
+    profile JSON,
     PRIMARY KEY (id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8
 SQL
-client.query("INSERT INTO users (name, age) VALUES ('alice', 20), ('bob', 30), ('carol', 40)")
+client.query(<<~SQL)
+  INSERT INTO users (name, age, profile) VALUES
+    ('alice', 20, '{"city":"Tokyo","tags":["a","b"]}'),
+    ('bob',   30, '{"city":"Osaka","tags":["c"]}'),
+    ('carol', 40, '{"city":"Nagoya","tags":[]}')
+SQL
 
 # --- 2. Build the management database and register a replication setting ----
 step "building management database '#{MANAGER_DB}' from setup SQL"
@@ -61,11 +67,11 @@ cfg = mysql_config
 client.query(<<~SQL)
   INSERT INTO `#{MANAGER_DB}`.settings
     (is_active, name, host, port, username, password, `database`,
-     query, prepared_query, `interval`, primary_key, enable_delete)
+     query, prepared_query, `interval`, primary_key, enable_delete, json_columns)
   VALUES
     (1, '#{SETTING_NAME}', '#{cfg[:host]}', #{cfg[:port]},
      '#{cfg[:username]}', '#{client.escape(cfg[:password].to_s)}', '#{SOURCE_DB}',
-     'SELECT id, name, age FROM users ORDER BY id', '', 2, 'id', 1)
+     'SELECT id, name, age, profile FROM users ORDER BY id', '', 2, 'id', 1, 'profile')
 SQL
 
 # --- 3. Boot Fluentd --------------------------------------------------------
@@ -82,6 +88,18 @@ begin
     end
   end
   step "  INSERT OK"
+
+  # --- 4b. JSON column is indexed as a nested object (not an escaped string) -
+  step "asserting JSON column is replicated as a nested object"
+  wait_until("user 1 profile.city == Tokyo in Elasticsearch", log_path: LOG_PATH) do
+    code, body = es_get(INDEX, TYPE, 1)
+    code == 200 && body.dig('_source', 'profile', 'city') == 'Tokyo'
+  end
+  _, body = es_get(INDEX, TYPE, 1)
+  unless body.dig('_source', 'profile', 'tags') == ['a', 'b']
+    fail_with("profile was not indexed as a nested object: #{body.dig('_source', 'profile').inspect}", LOG_PATH)
+  end
+  step "  JSON OK"
 
   # --- 5. hash_tables state is persisted ------------------------------------
   step "asserting hash_tables persistence"
