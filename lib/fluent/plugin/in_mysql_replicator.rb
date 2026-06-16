@@ -17,7 +17,10 @@ module Fluent::Plugin
     config_param :encoding, :string, :default => 'utf8'
     config_param :query, :string
     config_param :prepared_query, :string, :default => nil
-    config_param :primary_key, :string, :default => 'id'
+    # A single column name, or a comma-separated list for a composite key
+    # (e.g. "tenant_id,id"). The id used for change detection and the
+    # Elasticsearch document _id is the combination of these columns.
+    config_param :primary_key, :array, :default => ['id']
     config_param :interval, :string, :default => '1m'
     config_param :enable_delete, :bool, :default => true
     # Comma-separated column names whose MySQL JSON values should be parsed into
@@ -73,7 +76,8 @@ module Fluent::Plugin
         end
         rows, con = query(@query, con)
         rows.each do |row|
-          current_ids << row[@primary_key]
+          id = extract_id(row)
+          current_ids << id
           current_hash = Digest::SHA1.hexdigest(row.flatten.join)
           row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
           parse_json_columns!(row, @json_columns)
@@ -86,18 +90,18 @@ module Fluent::Plugin
             end
             prepared_con.close
           end
-          if row[@primary_key].nil?
-            log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{primary_key}"
+          if id.any?(&:nil?)
+            log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')} :id=>#{id}"
             break
           end
-          if !table_hash.include?(row[@primary_key])
+          if !table_hash.include?(id)
             tag = format_tag(@tag, {:event => :insert})
             emit_record(tag, row)
-          elsif table_hash[row[@primary_key]] != current_hash
+          elsif table_hash[id] != current_hash
             tag = format_tag(@tag, {:event => :update})
             emit_record(tag, row)
           end
-          table_hash[row[@primary_key]] = current_hash
+          table_hash[id] = current_hash
           rows_count += 1
         end
         con.close
@@ -108,7 +112,7 @@ module Fluent::Plugin
             hash_delete_by_list(table_hash, deleted_ids)
             deleted_ids.each do |id|
               tag = format_tag(@tag, {:event => :delete})
-              emit_record(tag, {@primary_key => id})
+              emit_record(tag, Hash[@primary_key.zip(id)])
             end
           end
         end
@@ -120,6 +124,12 @@ module Fluent::Plugin
 
     def hash_delete_by_list (hash, deleted_keys)
       deleted_keys.each{|k| hash.delete(k)}
+    end
+
+    # A row's id is the array of its primary-key column values, supporting
+    # composite keys. It is a single-element array for a single-column key.
+    def extract_id(row)
+      @primary_key.map {|col| row[col] }
     end
 
     # Returns the primary keys that disappeared since the previous poll.
@@ -152,7 +162,7 @@ module Fluent::Plugin
     end
 
     def format_tag(tag, param)
-      pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key}
+      pattern = {'${event}' => param[:event].to_s, '${primary_key}' => @primary_key.join(',')}
       tag.gsub(/(\${[a-z_]+})/) do
         log.warn "mysql_replicator: missing placeholder. :tag=>#{tag} :placeholder=>#{$1}" unless pattern.include?($1)
         pattern[$1]
