@@ -122,6 +122,31 @@ Notes:
 * Malformed JSON and non-string values are left untouched, so enabling the option
   never corrupts non-JSON data.
 
+## Date-based index names
+
+`mysql_replicator_elasticsearch` resolves the target index name from the tag
+(via `tag_format`). If that index-name segment contains `strftime` tokens such
+as `%Y%m%d`, they are expanded using the record's event time, so you can create
+Logstash-style dated indices like `myindex-20180831`.
+
+Put the tokens in the index-name part of the input plugin's `tag` (the segment
+must not contain `.`, so use `%Y%m%d` or `%Y-%m-%d`):
+
+```
+<source>
+  @type mysql_replicator
+  # ...
+  tag   myindex-%Y%m%d.mytype.${event}.${primary_key}
+</source>
+```
+
+Index names that contain no `%` are left unchanged, so this is fully backward
+compatible.
+
+> **Note on deletions:** delete events target the index computed from the delete
+> event's own time, so date-rotated indices are best suited to insert-only data
+> (a record inserted on a previous day lives in that day's index).
+
 ## Output example
 
 It is a example when detecting insert/update/delete events.
