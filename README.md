@@ -178,7 +178,8 @@ control a field's mapping — e.g. `keyword` for a non-analyzed field, or
 so it is applied to indices *before* the first document is written.
 
 `mysql_replicator_elasticsearch` can install a template on startup. The option
-names and defaults mirror `fluent-plugin-elasticsearch`:
+names mirror `fluent-plugin-elasticsearch` (the default here uses the modern
+composable API, whereas fluent-plugin-elasticsearch defaults to legacy):
 
 ```
 <match replicator.**>
@@ -187,7 +188,7 @@ names and defaults mirror `fluent-plugin-elasticsearch`:
   template_name        myindex_template
   template_file        /etc/fluent/myindex_template.json
   template_overwrite   false   # set true to replace an existing template
-  use_legacy_template  true    # true: PUT /_template (ES 6.x+); false: PUT /_index_template (ES >= 7.8)
+  use_legacy_template  false   # default. false: PUT /_index_template (ES >= 7.8); true: PUT /_template (legacy, ES 6.x+)
 </match>
 ```
 
@@ -196,24 +197,41 @@ names and defaults mirror `fluent-plugin-elasticsearch`:
 index whose name matches its `index_patterns` — **including future date-rolled
 indices** (see *Date-based index names* above) — with no per-write work.
 
-Example `template_file` (legacy format, the default) mapping a non-analyzed
-field as `keyword` and a coordinate field as `geo_point`:
+Example `template_file` (composable format, the default) mapping a non-analyzed
+field as `keyword`, a coordinate field as `geo_point`, and a `DECIMAL` column as
+a numeric (see below):
 
 ```json
 {
   "index_patterns": ["myindex-*"],
-  "mappings": {
-    "properties": {
-      "message":  { "type": "keyword" },
-      "location": { "type": "geo_point" }
+  "template": {
+    "mappings": {
+      "properties": {
+        "message":  { "type": "keyword" },
+        "location": { "type": "geo_point" },
+        "price":    { "type": "scaled_float", "scaling_factor": 100 }
+      }
     }
   }
 }
 ```
 
-With `use_legacy_template false`, use the composable template format instead
-(wrap `settings`/`mappings` under a `template` object); this requires
-Elasticsearch 7.8 or later.
+For Elasticsearch 6.x — or to reuse an existing `fluent-plugin-elasticsearch`
+legacy template — set `use_legacy_template true` and put `settings`/`mappings`
+at the top level (not under `template`).
+
+### Numeric columns (DECIMAL)
+
+MySQL `DECIMAL` columns are sent to Elasticsearch **as strings** — not because of
+a type-inference issue, but because `BigDecimal` cannot cross Fluentd's msgpack
+buffer between the input and output plugins, so the value is stringified (which
+also preserves its exact precision). Under the default dynamic mapping such a
+field is therefore indexed as text.
+
+To index it as a number, map the field in your template as `double`, or — to keep
+exact fixed-point precision — `scaled_float` (as `price` above). Elasticsearch's
+`coerce` (enabled by default for numeric types) converts the numeric string to a
+number at index time, so no value conversion is needed in the plugin.
 
 ## Output example
 
