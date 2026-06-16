@@ -169,6 +169,52 @@ as before.
 This applies to `mysql_replicator`; `mysql_replicator_multi` still expects a
 single-column primary key.
 
+## Index templates (mappings)
+
+By default Elasticsearch infers field types from the first document (dynamic
+mapping), and an existing field's mapping cannot be changed afterwards. To
+control a field's mapping — e.g. `keyword` for a non-analyzed field, or
+`geo_point`, which dynamic mapping never infers — install an **index template**
+so it is applied to indices *before* the first document is written.
+
+`mysql_replicator_elasticsearch` can install a template on startup. The option
+names and defaults mirror `fluent-plugin-elasticsearch`:
+
+```
+<match replicator.**>
+  @type mysql_replicator_elasticsearch
+  # ...
+  template_name        myindex_template
+  template_file        /etc/fluent/myindex_template.json
+  template_overwrite   false   # set true to replace an existing template
+  use_legacy_template  true    # true: PUT /_template (ES 6.x+); false: PUT /_index_template (ES >= 7.8)
+</match>
+```
+
+`template_name` and `template_file` must be set together. The template is a
+**server-side rule**, so once installed it is applied automatically to every new
+index whose name matches its `index_patterns` — **including future date-rolled
+indices** (see *Date-based index names* above) — with no per-write work.
+
+Example `template_file` (legacy format, the default) mapping a non-analyzed
+field as `keyword` and a coordinate field as `geo_point`:
+
+```json
+{
+  "index_patterns": ["myindex-*"],
+  "mappings": {
+    "properties": {
+      "message":  { "type": "keyword" },
+      "location": { "type": "geo_point" }
+    }
+  }
+}
+```
+
+With `use_legacy_template false`, use the composable template format instead
+(wrap `settings`/`mappings` under a `template` object); this requires
+Elasticsearch 7.8 or later.
+
 ## Output example
 
 It is a example when detecting insert/update/delete events.

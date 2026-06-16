@@ -1,6 +1,7 @@
 require 'helper'
 require 'fluent/test/driver/output'
 require 'webmock/test_unit'
+require 'tempfile'
 
 WebMock.disable_net_connect!
 
@@ -11,6 +12,19 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     Fluent::Test.setup
     @driver = nil
     @tag = 'myindex.mytype.insert.id'
+  end
+
+  def teardown
+    WebMock.reset!
+    (@tmpfiles || []).each {|f| f.close! rescue nil }
+  end
+
+  def write_template_file(body = '{"index_patterns":["myindex-*"],"mappings":{"properties":{"loc":{"type":"geo_point"}}}}')
+    file = Tempfile.new(['tmpl', '.json'])
+    file.write(body)
+    file.flush
+    (@tmpfiles ||= []) << file
+    file.path
   end
 
   def driver(conf='')
@@ -185,6 +199,48 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
         driver.feed(sample_record)
       end
     }
+  end
+
+  def test_installs_legacy_template_by_default
+    stub_elastic # version 6.8.23
+    stub_request(:get, "http://localhost:9200/_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run(default_tag: @tag) { driver.feed(sample_record) }
+    assert_requested(put_tmpl)
+  end
+
+  def test_installs_composable_template_when_legacy_disabled
+    stub_elastic
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\nuse_legacy_template false\n")
+    driver.run(default_tag: @tag) { driver.feed(sample_record) }
+    assert_requested(put_tmpl)
+  end
+
+  def test_skips_composable_template_on_old_elasticsearch
+    stub_elastic # version 6.8.23 (< 7.8)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\nuse_legacy_template false\n")
+    driver.run(default_tag: @tag) { driver.feed(sample_record) }
+    assert_not_requested(put_tmpl)
+  end
+
+  def test_skips_template_when_it_exists_and_no_overwrite
+    stub_elastic
+    stub_request(:get, "http://localhost:9200/_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    put_tmpl = stub_request(:put, "http://localhost:9200/_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run(default_tag: @tag) { driver.feed(sample_record) }
+    assert_not_requested(put_tmpl)
+  end
+
+  def test_template_name_without_file_raises
+    assert_raise(Fluent::ConfigError) do
+      driver.configure("template_name my_tmpl\n")
+    end
   end
 
   def test_writes_to_https_host

@@ -17,6 +17,19 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   config_param :username, :string, :default => nil
   config_param :password, :string, :default => nil, :secret => true
 
+  # Optional: install an Elasticsearch index template on startup so that newly
+  # created indices (including future date-rolled ones) get the desired mapping
+  # (e.g. geo_point or keyword fields) before the first document locks in
+  # dynamic mapping. template_name and template_file must be set together.
+  #
+  # Parameter names and defaults mirror fluent-plugin-elasticsearch:
+  #   use_legacy_template true  (default) -> PUT /_template/<name>        (ES 6.x+)
+  #   use_legacy_template false           -> PUT /_index_template/<name>  (ES >= 7.8)
+  config_param :template_name, :string, :default => nil
+  config_param :template_file, :string, :default => nil
+  config_param :template_overwrite, :bool, :default => false
+  config_param :use_legacy_template, :bool, :default => true
+
   config_section :buffer do
     config_set_default :@type, DEFAULT_BUFFER_TYPE
   end
@@ -35,12 +48,21 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     else
       @tag_format = Regexp.new(conf['tag_format'])
     end
+
+    if @template_name.nil? != @template_file.nil?
+      raise Fluent::ConfigError, "mysql_replicator_elasticsearch: 'template_name' and 'template_file' must be set together"
+    end
+    if @template_file && !File.exist?(@template_file)
+      raise Fluent::ConfigError, "mysql_replicator_elasticsearch: template_file not found: #{@template_file}"
+    end
   end
 
   def start
     super
     # nil means "not yet detected"; resolved on the first write.
     @suppress_type = nil
+    @es_version = nil
+    @template_installed = false
   end
 
   def format(tag, time, record)
@@ -61,6 +83,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
   def write(chunk)
     detect_type_suppression if @suppress_type.nil?
+    install_template_once if @template_name
 
     bulk_message = []
 
@@ -123,25 +146,76 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   # Mapping types were removed in Elasticsearch 8.x and deprecated in 7.x.
-  # Detect the major version once and omit "_type" for 7.x and later.
+  # Detect the version once and omit "_type" for 7.x and later.
   def detect_type_suppression
-    major = elasticsearch_major_version
+    @es_version = elasticsearch_version
+    major = @es_version&.first
     @suppress_type = !major.nil? && major >= 7
     if major
-      log.info "mysql_replicator_elasticsearch: detected Elasticsearch #{major}.x, suppress_type=#{@suppress_type}"
+      log.info "mysql_replicator_elasticsearch: detected Elasticsearch #{@es_version.join('.')}, suppress_type=#{@suppress_type}"
     else
       log.warn "mysql_replicator_elasticsearch: could not detect Elasticsearch version, sending '_type' (assuming 6.x)"
     end
   end
 
-  def elasticsearch_major_version
+  # Returns the Elasticsearch version as [major, minor], or nil if undetectable.
+  def elasticsearch_version
     request = Net::HTTP::Get.new('/')
     request.basic_auth(@username, @password) if @username && @password
     response = new_http.request(request)
     number = Yajl::Parser.parse(response.body).dig('version', 'number')
-    number.to_s.split('.').first.to_i
+    return nil if number.nil?
+    number.to_s.split('.').first(2).map(&:to_i)
   rescue => e
     log.warn "mysql_replicator_elasticsearch: version detection failed: #{e.message}"
     nil
+  end
+
+  # Install the configured index template once, on the first write. The template
+  # is a server-side rule, so Elasticsearch applies it to every new index whose
+  # name matches its index_patterns -- including future date-rolled indices --
+  # without any further action here. Failures are logged but never abort indexing.
+  def install_template_once
+    return if @template_installed
+    @template_installed = true
+    install_template
+  rescue => e
+    log.warn "mysql_replicator_elasticsearch: failed to install index template '#{@template_name}': #{e.message}"
+  end
+
+  def install_template
+    if !@use_legacy_template && !composable_templates_supported?
+      log.warn "mysql_replicator_elasticsearch: composable index templates require Elasticsearch >= 7.8; skipping template '#{@template_name}' (detected #{@es_version&.join('.') || 'unknown'})"
+      return
+    end
+    if !@template_overwrite && template_exists?
+      log.info "mysql_replicator_elasticsearch: index template '#{@template_name}' already exists; skipping (set 'template_overwrite true' to replace)"
+      return
+    end
+    put_template(File.read(@template_file))
+    log.info "mysql_replicator_elasticsearch: installed index template '#{@template_name}' (#{@use_legacy_template ? 'legacy' : 'composable'})"
+  end
+
+  def composable_templates_supported?
+    return false if @es_version.nil?
+    major, minor = @es_version
+    major > 7 || (major == 7 && minor >= 8)
+  end
+
+  def template_path
+    @use_legacy_template ? "/_template/#{@template_name}" : "/_index_template/#{@template_name}"
+  end
+
+  def template_exists?
+    request = Net::HTTP::Get.new(template_path)
+    request.basic_auth(@username, @password) if @username && @password
+    new_http.request(request).code.to_i == 200
+  end
+
+  def put_template(body)
+    request = Net::HTTP::Put.new(template_path, {'content-type' => 'application/json; charset=utf-8'})
+    request.basic_auth(@username, @password) if @username && @password
+    request.body = body
+    new_http.request(request).value
   end
 end
