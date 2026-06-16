@@ -72,4 +72,36 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
   def test_detect_deleted_ids_empty_current_does_not_mass_delete
     assert_equal [], deleted_ids([1, 2, 3], [])
   end
+
+  # --- #4: a nested sub-query fires only for a SELECT template with ${...} ---
+
+  def nested?(value)
+    conf = %[
+      tag   input.mysql
+      query SELECT id, text from search_test
+    ]
+    create_driver(conf).instance.nested_query_value?(value)
+  end
+
+  def test_nested_query_value_true_for_select_with_placeholder
+    assert_true nested?("SELECT * FROM child WHERE parent_id = ${id}")
+  end
+
+  def test_nested_query_value_false_for_plain_text_starting_with_select
+    # Regression for #4: a data value beginning with "SELECT" must not run as SQL.
+    assert_false nested?("SELECT YOUR PLAN")
+  end
+
+  def test_nested_query_value_false_for_word_select
+    assert_false nested?("Selecting the best option")
+  end
+
+  def test_nested_query_value_false_for_select_without_placeholder
+    assert_false nested?("select count(*) from search_test")
+  end
+
+  def test_nested_query_value_false_for_non_string_values
+    assert_false nested?(12345)
+    assert_false nested?(nil)
+  end
 end
