@@ -97,13 +97,7 @@ module Fluent::Plugin
         con.close
         ids = current_ids
         if @enable_delete
-          if current_ids.empty?
-            deleted_ids = Array.new
-          elsif previous_ids.empty?
-            deleted_ids = [*1...current_ids.max] - current_ids
-          else
-            deleted_ids = previous_ids - current_ids
-          end
+          deleted_ids = detect_deleted_ids(previous_ids, current_ids)
           if deleted_ids.count > 0
             hash_delete_by_list(table_hash, deleted_ids)
             deleted_ids.each do |id|
@@ -120,6 +114,19 @@ module Fluent::Plugin
 
     def hash_delete_by_list (hash, deleted_keys)
       deleted_keys.each{|k| hash.delete(k)}
+    end
+
+    # Returns the primary keys that disappeared since the previous poll.
+    #
+    # The first poll only establishes a baseline: there is no previous snapshot
+    # to diff against, so nothing is reported as deleted yet. This also avoids
+    # the old `[*1...current_ids.max]` range, which raised "bad value for range"
+    # for non-integer primary keys and allocated a huge array (and emitted
+    # phantom deletes) for large / sparse integer ids. (#42)
+    def detect_deleted_ids(previous_ids, current_ids)
+      return [] if previous_ids.empty?
+      return [] if current_ids.empty?
+      previous_ids - current_ids
     end
 
     def format_tag(tag, param)
