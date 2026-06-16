@@ -37,4 +37,39 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal 'input.mysql', d.instance.tag
     assert_equal false, d.instance.enable_delete
   end
+
+  # --- #42: delete detection must not build an integer Range from primary keys ---
+
+  def deleted_ids(previous_ids, current_ids)
+    conf = %[
+      tag   input.mysql
+      query SELECT id, text from search_test
+    ]
+    create_driver(conf).instance.detect_deleted_ids(previous_ids, current_ids)
+  end
+
+  def test_detect_deleted_ids_first_poll_reports_no_deletes
+    assert_equal [], deleted_ids([], [1, 2, 3])
+  end
+
+  def test_detect_deleted_ids_first_poll_with_string_keys_does_not_raise
+    # Regression for #42: the old `[*1...'c']` raised "bad value for range".
+    assert_nothing_raised do
+      assert_equal [], deleted_ids([], %w[a b c])
+    end
+  end
+
+  def test_detect_deleted_ids_first_poll_with_sparse_ids_has_no_phantom_deletes
+    # The old code returned `[*1...99] - [1, 50, 99]`, emitting deletes for ids
+    # that never existed. The first poll must only establish a baseline.
+    assert_equal [], deleted_ids([], [1, 50, 99])
+  end
+
+  def test_detect_deleted_ids_diffs_against_previous_snapshot
+    assert_equal [2], deleted_ids([1, 2, 3], [1, 3])
+  end
+
+  def test_detect_deleted_ids_empty_current_does_not_mass_delete
+    assert_equal [], deleted_ids([1, 2, 3], [])
+  end
 end
