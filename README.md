@@ -147,6 +147,28 @@ compatible.
 > event's own time, so date-rotated indices are best suited to insert-only data
 > (a record inserted on a previous day lives in that day's index).
 
+## Composite primary keys
+
+`primary_key` accepts a comma-separated list of columns, so tables keyed by more
+than one column are supported:
+
+```
+<source>
+  @type        mysql_replicator
+  # ...
+  query        SELECT tenant_id, id, name FROM items
+  primary_key  tenant_id,id
+</source>
+```
+
+Change detection (insert/update/delete) then keys on the combination of those
+columns, and the Elasticsearch document `_id` becomes their values joined by `,`
+(e.g. `10,7`). A single-column `primary_key` (the default `id`) behaves exactly
+as before.
+
+This applies to `mysql_replicator`; `mysql_replicator_multi` still expects a
+single-column primary key.
+
 ## Output example
 
 It is a example when detecting insert/update/delete events.

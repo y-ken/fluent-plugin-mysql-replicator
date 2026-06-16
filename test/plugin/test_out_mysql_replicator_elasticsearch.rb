@@ -79,6 +79,14 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal('plainindex', index_cmds.first['index']['_index'])
   end
 
+  def test_composite_primary_key_builds_joined_id
+    stub_elastic
+    driver.run(default_tag: 'myindex.mytype.insert.tenant_id,id') do
+      driver.feed({'tenant_id' => 10, 'id' => 7, 'text' => 'x'})
+    end
+    assert_equal('10,7', index_cmds.first['index']['_id'])
+  end
+
   def test_writes_to_speficied_type
     driver.configure("type_name mytype\n")
     stub_elastic

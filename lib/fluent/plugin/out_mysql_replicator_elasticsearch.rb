@@ -68,18 +68,18 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       tag_parts = tag.match(@tag_format)
       target_index = resolve_index_name(tag_parts['index_name'], time)
       target_type = tag_parts['type_name']
-      id_key = tag_parts['primary_key']
+      id_keys = tag_parts['primary_key'].to_s.split(',')
 
       if tag_parts['event'] == 'delete'
-        action = {"_index" => target_index, "_id" => record[id_key]}
+        action = {"_index" => target_index, "_id" => join_id(record, id_keys)}
         action['_type'] = target_type unless @suppress_type
         meta = { "delete" => action }
         bulk_message << Yajl::Encoder.encode(meta)
       else
         action = {"_index" => target_index}
         action['_type'] = target_type unless @suppress_type
-        if id_key && record[id_key]
-          action['_id'] = record[id_key]
+        if !id_keys.empty? && id_keys.all? {|k| !record[k].nil? }
+          action['_id'] = join_id(record, id_keys)
         end
         meta = { "index" => action }
         bulk_message << Yajl::Encoder.encode(meta)
@@ -103,6 +103,12 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     http = Net::HTTP.new(@host, @port.to_i)
     http.use_ssl = @ssl
     http
+  end
+
+  # Build the document _id from one or more primary-key columns. A single key
+  # yields its value; a composite key yields the values joined by ",".
+  def join_id(record, id_keys)
+    id_keys.map {|k| record[k] }.join(',')
   end
 
   # Expand strftime tokens (e.g. "%Y%m%d") in the index name using the record's

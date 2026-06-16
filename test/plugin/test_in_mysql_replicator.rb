@@ -137,4 +137,30 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_false nested?(12345)
     assert_false nested?(nil)
   end
+
+  # --- #7: composite primary key support ---
+
+  def composite_driver
+    create_driver(%[
+      tag         input.mysql
+      query       SELECT tenant_id, id, text from t
+      primary_key tenant_id,id
+    ])
+  end
+
+  def test_primary_key_defaults_to_id_array
+    assert_equal ['id'], create_driver.instance.primary_key
+  end
+
+  def test_primary_key_parses_composite_list
+    assert_equal ['tenant_id', 'id'], composite_driver.instance.primary_key
+  end
+
+  def test_extract_id_single_key_is_one_element_array
+    assert_equal [7], create_driver.instance.extract_id({'id' => 7, 'text' => 'x'})
+  end
+
+  def test_extract_id_returns_composite_values
+    assert_equal [10, 7], composite_driver.instance.extract_id({'tenant_id' => 10, 'id' => 7, 'text' => 'x'})
+  end
 end
