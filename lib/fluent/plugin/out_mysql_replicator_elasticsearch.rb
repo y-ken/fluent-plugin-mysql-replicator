@@ -66,7 +66,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
     chunk.msgpack_each do |tag, time, record|
       tag_parts = tag.match(@tag_format)
-      target_index = tag_parts['index_name']
+      target_index = resolve_index_name(tag_parts['index_name'], time)
       target_type = tag_parts['type_name']
       id_key = tag_parts['primary_key']
 
@@ -103,6 +103,17 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     http = Net::HTTP.new(@host, @port.to_i)
     http.use_ssl = @ssl
     http
+  end
+
+  # Expand strftime tokens (e.g. "%Y%m%d") in the index name using the record's
+  # event time, enabling date-based indices such as "myindex-20180831". Index
+  # names without a "%" are returned unchanged.
+  def resolve_index_name(index_name, time)
+    return index_name unless index_name && index_name.include?('%')
+    Time.at(time.to_i).strftime(index_name)
+  rescue => e
+    log.warn "mysql_replicator_elasticsearch: failed to expand index name '#{index_name}': #{e.message}"
+    index_name
   end
 
   # Mapping types were removed in Elasticsearch 8.x and deprecated in 7.x.

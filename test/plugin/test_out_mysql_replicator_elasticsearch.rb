@@ -61,6 +61,24 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal('myindex', index_cmds.first['index']['_index'])
   end
 
+  def test_expands_strftime_tokens_in_index_name
+    stub_elastic
+    time = Time.utc(2018, 8, 31, 12, 0, 0).to_i
+    driver.run(default_tag: 'myindex-%Y%m%d.mytype.insert.id') do
+      driver.feed(time, sample_record)
+    end
+    expected = "myindex-#{Time.at(time).strftime('%Y%m%d')}"
+    assert_equal(expected, index_cmds.first['index']['_index'])
+  end
+
+  def test_index_name_without_token_is_unchanged
+    stub_elastic
+    driver.run(default_tag: 'plainindex.mytype.insert.id') do
+      driver.feed(sample_record)
+    end
+    assert_equal('plainindex', index_cmds.first['index']['_index'])
+  end
+
   def test_writes_to_speficied_type
     driver.configure("type_name mytype\n")
     stub_elastic
