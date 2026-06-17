@@ -2,16 +2,21 @@
 
 ## Overview
 
-Fluentd input plugin to track insert/update/delete event from MySQL database server.  
-Not only that, it could multiple table replication into single or multi Elasticsearch/Solr.  
-It's comming support replicate to another RDB/noSQL.
+Fluentd input plugin that tracks insert / update / delete events on a MySQL
+database server, and can replicate one or many tables into Elasticsearch or Solr.
 
 ## Requirements
 
-| fluent-plugin-mysql-replicator | fluentd    | ruby   |
-|--------------------|------------|--------|
-|  >= 0.6.1          | >= v0.14.x | >= 2.1 |
-|  <= 0.6.1          | >= v0.12.x | >= 1.9 |
+The current release is tested against:
+
+| Component              | Versions |
+|------------------------|----------|
+| Ruby                   | 3.2, 3.3, 3.4, 4.0 |
+| Fluentd                | v1.x, including [fluent-package](https://www.fluentd.org/download/fluent_package) v6 LTS (bundles Fluentd 1.19) |
+| Elasticsearch (output) | 6.x – 9.x |
+
+Older 0.6.x / 1.0.x releases ran on Fluentd v0.12 / v0.14 and Ruby >= 2.1, with
+td-agent (now end-of-life) as the packaged distribution.
 
 ## Dependency
 
@@ -41,18 +46,18 @@ $ apt-get update && apt-get install -y build-essential default-libmysqlclient-de
 
 ## Installation
 
-install with gem or fluent-gem command as:
+Install with RubyGems, or with `fluent-gem` for fluent-package:
 
-`````
-# for system installed fluentd
-$ gem install fluent-plugin-mysql-replicator -v 1.0.3
+```bash
+# system-wide Fluentd (RubyGems)
+$ gem install fluent-plugin-mysql-replicator
 
-# for td-agent2
-$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 0.6.1
+# fluent-package (the td-agent successor)
+$ sudo fluent-gem install fluent-plugin-mysql-replicator
+```
 
-# for td-agent3
-$ sudo td-agent-gem install fluent-plugin-mysql-replicator -v 1.0.3
-`````
+If the `mysql2` native extension fails to build, see the **Dependency** section
+above.
 
 ## Development container
 
@@ -63,7 +68,8 @@ The container installs Ruby, Bundler, and required native build dependencies.
 After opening the repository in the Dev Container, run:
 
 ```
-bundle install --path vendor/bundle
+bundle config set --local path vendor/bundle
+bundle install
 ```
 
 Then run tests like:
@@ -169,6 +175,26 @@ as before.
 This applies to `mysql_replicator`; `mysql_replicator_multi` still expects a
 single-column primary key.
 
+## Nested documents
+
+You can nest the rows of a sub-query under a column. Select a SQL query template
+(containing a `${placeholder}`) as a column value; for each row the plugin runs
+that query, substituting the placeholder with the row's column value, and nests
+the results under the column:
+
+```sql
+SELECT
+  id,
+  title,
+  'SELECT body, author FROM comments WHERE post_id = ${id}' AS comments
+FROM posts;
+```
+
+Here every `posts` row gets a `comments` array built from the sub-query.
+
+Only values matching `SELECT ... ${...}` are treated as sub-queries, so ordinary
+text columns that merely begin with the word "SELECT" are left untouched.
+
 ## Index templates (mappings)
 
 By default Elasticsearch infers field types from the first document (dynamic
@@ -235,7 +261,7 @@ number at index time, so no value conversion is needed in the plugin.
 
 ## Output example
 
-It is a example when detecting insert/update/delete events.
+An example of detecting insert/update/delete events.
 
 ### sample query
 
@@ -253,7 +279,7 @@ $ mysql myweb -e "delete from search_test where text='bbb'"
 ### result
 
 `````
-$ tail -f /var/log/td-agent/td-agent.log
+$ tail -f /var/log/fluent/fluentd.log
 2013-11-25 18:22:25 +0900 replicator.myweb.search_test.insert.id: {"id":"1","text":"aaa"}
 2013-11-25 18:22:35 +0900 replicator.myweb.search_test.update.id: {"id":"1","text":"bbb"}
 2013-11-25 18:22:45 +0900 replicator.myweb.search_test.delete.id: {"id":"1"}
@@ -263,15 +289,16 @@ $ tail -f /var/log/td-agent/td-agent.log
 
 ### mysql_replicator
 
-It is easy to try it on this plugin quickly.  
-For more detail are described at [Tutorial-mysql_replicator.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/Tutorial-mysql_replicator.md)
+It is easy to try out quickly.  
+More details are described in [Tutorial-mysql_replicator.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/Tutorial-mysql_replicator.md)
 
 **Features**
 
-* Table (or view table) synchronization supported.
-* Replicate small record under a millons table.
-* It is recommend to use insert only table.
-* Nested documents are supported with placeholder which accessing to temporary table created at the each loop.
+* Synchronizes a table (or a view).
+* Best suited to small-to-medium tables (the whole result set is held in memory).
+* Insert-only tables work best.
+* Composite primary keys are supported (see *Composite primary keys* above).
+* Nested documents are supported via a `${...}` placeholder sub-query (see *Nested documents* above).
 
 **Examples**
 
@@ -280,17 +307,17 @@ For more detail are described at [Tutorial-mysql_replicator.md](https://github.c
 
 ### mysql_replicator_multi
 
-It replicates a millions of records and/or multiple tables with multiple threads.  
-This architecture is storing hash table in MySQL management table instead of ruby internal memory.  
-See tutorial at [Tutorial-mysql_replicator_multi.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/Tutorial-mysql_replicator_multi.md)
+It replicates millions of records and/or multiple tables with multiple threads.  
+This architecture stores the hash table in a MySQL management table instead of Ruby memory.  
+See the tutorial at [Tutorial-mysql_replicator_multi.md](https://github.com/y-ken/fluent-plugin-mysql-replicator/blob/master/Tutorial-mysql_replicator_multi.md)
 
 **Features**
 
-* table (or view table) synchronization supported.
-* Multiple table synchronization supported and its DSN stored in MySQL management table.
-* Using MySQL database as hash table cache to support replicate over a millions table.
-* It is recommend to make whole copy of tables.
-* Nested documents are supported with placeholder which accessing to temporary table created at the each loop.
+* Synchronizes a table (or a view).
+* Replicates multiple tables, with each source connection/query stored in a MySQL management table.
+* Uses a MySQL table as the hash-table cache, so it scales to tables with millions of rows.
+* Best suited to replicating whole tables.
+* Nested documents are supported via a `${...}` placeholder sub-query (see *Nested documents* above).
 
 **Examples**
 
@@ -310,12 +337,11 @@ http://y-ken.hatenablog.com/entry/fluent-plugin-mysql-repicator-v0.4.0
 
 ## TODO
 
-Pull requests are very welcome like below!!
+Pull requests are very welcome, for example:
 
-* more documents
-* more tests with mock.
-* support string type of primary_key.
-* support reload setting on demand.
+* more documentation and examples
+* composite primary key support for `mysql_replicator_multi`
+* reload settings on demand
 
 ## Copyright
 

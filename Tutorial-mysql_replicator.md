@@ -1,12 +1,15 @@
 ## Tutorial for Quickstart (mysql_replicator)
 
-It is useful for these purpose.
+Useful when you want to:
 
-* try it on this plugin quickly.
-* replicate small record under a millons table.
+* try this plugin quickly.
+* replicate a small-to-medium table.
 
-**Note:**  
-On syncing 300 million rows table, it will consume around 800MB of memory with ruby 1.9.3 environment.
+**Note:** the plugin keeps an in-memory hash of every row, so memory grows with
+the table size (on the order of ~800MB for a 300 million row table). For large
+or multiple tables, use
+[`mysql_replicator_multi`](Tutorial-mysql_replicator_multi.md), which stores the
+hash table in MySQL instead of Ruby memory.
 
 ### How it works
 
@@ -32,53 +35,56 @@ intentionally narrow the `query` to recently changed rows together with
 
 `````
 <source>
-  type mysql_replicator
+  @type mysql_replicator
 
-  # Set connection settings for replicate source.
-  host localhost
+  # Connection settings for the replication source.
+  host     localhost
   username your_mysql_user
   password your_mysql_password
   database myweb
 
-  # Set replicate query configuration.
-  query SELECT id, text from search_test;
-  primary_key id # specify unique key (default: id)
-  interval 10s  # execute query interval (default: 1m)
+  # Replication query.
+  query       SELECT id, text FROM search_test;
+  primary_key id    # a column name, or a comma-separated list for a composite key (default: id)
+  interval    10s   # how often to run the query (default: 1m)
 
-  # Enable detect deletion event not only insert/update events. (default: yes)
-  # It is useful to use `enable_delete no` that keep following recently updated record with this query.
-  # `SELECT * FROM search_test WHERE DATE_ADD(updated_at, INTERVAL 5 MINUTE) > NOW();`
+  # Detect delete events in addition to insert/update (default: yes).
+  # With `enable_delete no` you can instead narrow the query to recently updated
+  # rows, e.g.:
+  #   SELECT * FROM search_test WHERE DATE_ADD(updated_at, INTERVAL 5 MINUTE) > NOW();
   enable_delete yes
 
-  # Format output tag for each events. Placeholders usage as described below.
+  # Output tag. ${event} and ${primary_key} are expanded by the plugin.
   tag replicator.myweb.search_test.${event}.${primary_key}
-  # ${event} : the variation of row event type by insert/update/delete.
-  # ${primary_key} : the value of `replicator_manager.settings.primary_key` in manager table.
+  # ${event}       : insert / update / delete
+  # ${primary_key} : the configured primary_key column name(s)
 </source>
 
-<match replicator.*>
-  type copy
+<match replicator.**>
+  @type copy
   <store>
-    type stdout
+    @type stdout
   </store>
   <store>
-    type mysql_replicator_elasticsearch
+    @type mysql_replicator_elasticsearch
 
-    # Set Elasticsearch connection.
+    # Elasticsearch connection.
     host localhost
     port 9200
 
-    # Set Elasticsearch index, type, and unique id (primary_key) from tag.
+    # Derive the Elasticsearch index / type / id from the tag.
     tag_format (?<index_name>[^\.]+)\.(?<type_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
 
-    # Set frequency of sending bulk request to Elasticsearch node.
-    flush_interval 5s
-    
-    # Queued chunks are flushed at shutdown process. (recommend for more stability)
-    # It's sample for td-agent. If you use Yamabiko, replace path from 'td-agent' to 'yamabiko'.
-    flush_at_shutdown yes
-    buffer_type file
-    buffer_path /var/log/td-agent/buffer/mysql_replicator_elasticsearch
+    <buffer>
+      @type             file
+      path              /var/log/fluent/buffer/mysql_replicator_elasticsearch
+      flush_interval    5s
+      flush_at_shutdown true   # flush queued chunks on shutdown (recommended)
+    </buffer>
   </store>
 </match>
 `````
+
+> Using the [fluent-package](https://www.fluentd.org/download/fluent_package)
+> distribution? Its buffer/log directory is `/var/log/fluent/` (the old td-agent
+> path was `/var/log/td-agent/`).
