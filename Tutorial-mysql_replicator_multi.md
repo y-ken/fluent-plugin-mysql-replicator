@@ -43,7 +43,14 @@ VALUES
    'SELECT id, text FROM mytable;', '', 5, 'id', 1);
 ```
 
-The `settings` table also has optional columns with sensible defaults:
+The inserted row then looks like this — the columns you didn't set fall back to
+their defaults:
+
+| id | is_active | name | host | port | username | password | database | query | prepared_query | interval | primary_key | json_columns | enable_delete | enable_loose_insert | enable_loose_delete | enable_retry | retry_interval |
+|----|-----------|------|------|------|----------|----------|----------|-------|----------------|----------|-------------|--------------|---------------|---------------------|---------------------|--------------|----------------|
+| 1 | 1 | mydb.mytable | 192.168.100.221 | 3306 | mysqluser | mysqlpassword | mydb | SELECT id, text FROM mytable; |  | 5 | id | NULL | 1 | 0 | 0 | 1 | 30 |
+
+The optional columns have sensible defaults:
 
 * `json_columns` — comma-separated MySQL `JSON` columns to parse into nested
   objects (see the [README](README.md#json-column-support)).
