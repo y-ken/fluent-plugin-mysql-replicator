@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-17
+
+### Added
+- Plugin-managed Elasticsearch index templates. New `template_name`,
+  `template_file`, `template_overwrite`, and `use_legacy_template` options on
+  `mysql_replicator_elasticsearch` install an index template on startup, so newly
+  created indices — including future date-rolled ones — get the desired mapping
+  before the first document locks in dynamic mapping. This enables mappings that
+  cannot be changed after the fact: `keyword` / non-analyzed fields ([#20]) and
+  `geo_point` ([#36]). `use_legacy_template` defaults to `false` (composable
+  `PUT /_index_template`, Elasticsearch >= 7.8); set it to `true` for the legacy
+  `PUT /_template` API (Elasticsearch 6.x+).
+
+### Documentation
+- Document that MySQL `DECIMAL` columns are emitted as strings (because
+  `BigDecimal` cannot cross Fluentd's msgpack buffer, which also preserves exact
+  precision) and should be mapped as `double` or `scaled_float` in an index
+  template, where Elasticsearch coerces the numeric string at index time. ([#36])
+
 ## [1.3.0] - 2026-06-16
 
 ### Added
@@ -85,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - First 1.0 release, targeting the Fluentd v0.14+ plugin API. Earlier 0.x
   history is available in the git log.
 
+[1.4.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.0.3...v1.1.0
@@ -96,7 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#4]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/4
 [#7]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/7
 [#18]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/18
+[#20]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/20
 [#27]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/27
+[#36]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/36
 [#39]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/39
 [#40]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/40
 [#42]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/42
