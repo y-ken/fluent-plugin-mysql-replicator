@@ -22,13 +22,14 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   # (e.g. geo_point or keyword fields) before the first document locks in
   # dynamic mapping. template_name and template_file must be set together.
   #
-  # Parameter names and defaults mirror fluent-plugin-elasticsearch:
-  #   use_legacy_template true  (default) -> PUT /_template/<name>        (ES 6.x+)
-  #   use_legacy_template false           -> PUT /_index_template/<name>  (ES >= 7.8)
+  # Parameter names mirror fluent-plugin-elasticsearch. The default uses the
+  # modern composable API (fluent-plugin-elasticsearch defaults to legacy):
+  #   use_legacy_template false (default) -> PUT /_index_template/<name>  (composable, ES >= 7.8)
+  #   use_legacy_template true            -> PUT /_template/<name>        (legacy, ES 6.x+)
   config_param :template_name, :string, :default => nil
   config_param :template_file, :string, :default => nil
   config_param :template_overwrite, :bool, :default => false
-  config_param :use_legacy_template, :bool, :default => true
+  config_param :use_legacy_template, :bool, :default => false
 
   config_section :buffer do
     config_set_default :@type, DEFAULT_BUFFER_TYPE
@@ -185,7 +186,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
   def install_template
     if !@use_legacy_template && !composable_templates_supported?
-      log.warn "mysql_replicator_elasticsearch: composable index templates require Elasticsearch >= 7.8; skipping template '#{@template_name}' (detected #{@es_version&.join('.') || 'unknown'})"
+      log.warn "mysql_replicator_elasticsearch: composable index templates require Elasticsearch >= 7.8; skipping template '#{@template_name}' (detected #{@es_version&.join('.') || 'unknown'}). Set 'use_legacy_template true' for older Elasticsearch."
       return
     end
     if !@template_overwrite && template_exists?

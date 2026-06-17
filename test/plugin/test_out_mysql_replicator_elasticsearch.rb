@@ -201,37 +201,38 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     }
   end
 
-  def test_installs_legacy_template_by_default
-    stub_elastic # version 6.8.23
-    stub_request(:get, "http://localhost:9200/_template/my_tmpl").to_return(:status => 404)
-    put_tmpl = stub_request(:put, "http://localhost:9200/_template/my_tmpl").to_return(:status => 200, :body => "{}")
+  def test_installs_composable_template_by_default
+    stub_elastic
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
     driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
     driver.run(default_tag: @tag) { driver.feed(sample_record) }
     assert_requested(put_tmpl)
   end
 
-  def test_installs_composable_template_when_legacy_disabled
-    stub_elastic
-    stub_elastic_version("http://localhost:9200/", "8.18.0")
-    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
-    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
-    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\nuse_legacy_template false\n")
+  def test_installs_legacy_template_when_enabled
+    stub_elastic # version 6.8.23
+    stub_request(:get, "http://localhost:9200/_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\nuse_legacy_template true\n")
     driver.run(default_tag: @tag) { driver.feed(sample_record) }
     assert_requested(put_tmpl)
   end
 
   def test_skips_composable_template_on_old_elasticsearch
-    stub_elastic # version 6.8.23 (< 7.8)
+    stub_elastic # version 6.8.23 (< 7.8), default composable
     put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
-    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\nuse_legacy_template false\n")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
     driver.run(default_tag: @tag) { driver.feed(sample_record) }
     assert_not_requested(put_tmpl)
   end
 
   def test_skips_template_when_it_exists_and_no_overwrite
     stub_elastic
-    stub_request(:get, "http://localhost:9200/_template/my_tmpl").to_return(:status => 200, :body => "{}")
-    put_tmpl = stub_request(:put, "http://localhost:9200/_template/my_tmpl")
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
     driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
     driver.run(default_tag: @tag) { driver.feed(sample_record) }
     assert_not_requested(put_tmpl)
