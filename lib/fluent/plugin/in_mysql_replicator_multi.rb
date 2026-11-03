@@ -80,12 +80,9 @@ module Fluent::Plugin
 
     def get_settings
       manager_db = get_manager_connection
-      settings = []
-      query = "SELECT * FROM settings WHERE is_active = 1;"
-      manager_db.query(query).each do |row|
-        settings << row
-      end
-      return settings
+      manager_db.query("SELECT * FROM settings WHERE is_active = 1;").to_a
+    ensure
+      manager_db.close if manager_db
     end
 
     def poll(config)

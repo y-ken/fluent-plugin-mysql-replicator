@@ -114,6 +114,43 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_match(/mysql_replicator_multi: skipped 2 rows without the primary key\. :setting_name=>users :primary_key=>id$/, skipped.first)
   end
 
+  # Starts the plugin with real threads, a fake manager database with the given settings, and fake source databases.
+  # Returns the instance, the manager connections it opened, and a queue that gets each poll's query.
+  def start_with_settings(settings)
+    instance = create_driver(CONFIG).instance
+    hash_tables = FakeHashTables.new
+    managers = []
+    instance.define_singleton_method(:get_manager_connection) do
+      FakeMysqlClient.new do |sql|
+        case sql
+        when /FROM settings/ then settings
+        when /\ASET SESSION/ then []
+        else hash_tables.call(sql)
+        end
+      end.tap {|c| managers << c }
+    end
+    polled = Queue.new
+    instance.define_singleton_method(:get_origin_connection) do |config|
+      FakeMysqlClient.new {|sql| polled << sql if sql == config['query']; users(1) }
+    end
+    instance.define_singleton_method(:emit_record) {|_tag, _record| }
+    instance.start
+    [instance, managers, polled]
+  end
+
+  def test_get_settings_closes_its_connection
+    instance, managers, polled = start_with_settings([setting])
+    begin
+      Timeout.timeout(10) { polled.pop }
+      settings_connection = managers.find {|c| c.queries.any? {|q| q.include?('FROM settings') } }
+      assert_true(settings_connection.closed?)
+      assert_false(instance.instance_variable_get(:@manager_db).closed?)
+    ensure
+      instance.stop
+      instance.shutdown
+    end
+  end
+
   # A failed flush, such as a timeout of the manager database, is logged, and the buffer is flushed again later.
   def test_hash_table_flusher_survives_a_failed_flush
     inserts = 0
