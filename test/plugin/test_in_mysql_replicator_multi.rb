@@ -1,6 +1,7 @@
 require 'helper'
 require 'fluent/test/driver/input'
 require 'fake_mysql_client'
+require 'timeout'
 
 class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   def setup
@@ -35,6 +36,83 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     manager = FakeMysqlClient.new(&responder)
     instance.define_singleton_method(:get_manager_connection) { manager }
     [instance, manager]
+  end
+
+  # A failed flush, such as a timeout of the manager database, is logged, and the buffer is flushed again later.
+  def test_hash_table_flusher_survives_a_failed_flush
+    inserts = 0
+    instance = nil
+    instance, manager = instance_with_manager(CONFIG + "bulk_insert_timeout 0\n") do |sql|
+      next [] unless sql.start_with?('INSERT')
+      inserts += 1
+      raise Mysql2::Error, 'Lost connection to MySQL server during query' if inserts == 1
+      instance.instance_variable_set(:@running, false)
+      []
+    end
+    instance.instance_variable_set(:@manager_db, manager)
+    instance.instance_variable_set(:@mutex, Mutex.new)
+    instance.instance_variable_set(:@running, true)
+    instance.instance_variable_set(:@hash_table_bulk_insert, ["('setting','1','hash')"])
+    instance.instance_variable_set(:@hash_table_bulk_insert_last_time, Time.now - 60)
+    assert_nothing_raised { Timeout.timeout(10) { instance.hash_table_flusher } }
+    assert_equal(2, inserts)
+    assert_empty(instance.instance_variable_get(:@hash_table_bulk_insert))
+  end
+
+  # A row that hash_tables cannot hold, such as a primary key out of the range of INT, failed every flush, so the rows
+  # of every setting stayed out of hash_tables and were sent as inserts again on every poll. The other rows are
+  # written, and that one is dropped.
+  def test_row_that_hash_tables_cannot_hold_does_not_block_the_others
+    written = []
+    instance, manager = instance_with_manager(CONFIG) do |sql|
+      next [] unless sql.start_with?('INSERT')
+      values = sql.scan(/\('([^']*)','([^']*)','([^']*)'\)/)
+      if values.any? {|_, pk, _| pk.to_i > 2147483647 }
+        raise Mysql2::Error.new("Out of range value for column 'setting_query_pk' at row 1", nil, 1264, '22003')
+      end
+      written.concat(values.map {|name, pk, _| [name, pk] })
+      []
+    end
+    instance.instance_variable_set(:@manager_db, manager)
+    instance.instance_variable_set(:@hash_table_bulk_insert, ["('users','1','h')", "('big','3000000000','h')", "('users','2','h')"])
+    instance.flush_hash_table
+    assert_equal([['users', '1'], ['users', '2']], written)
+    assert_empty(instance.instance_variable_get(:@hash_table_bulk_insert))
+    errors = instance.log.out.logs.grep(/\[error\]/)
+    assert_equal(1, errors.grep(/dropped 1 rows that hash_tables cannot hold, with MySQL error 1264 \(SQLSTATE 22003\)/).size)
+    assert_empty(errors.grep(/3000000000/))
+  end
+
+  # A primary key such as a date or '12abc' in the INT column is "Data truncated" (1265) in strict mode.
+  def test_primary_key_truncated_by_hash_tables_does_not_block_the_others
+    written = []
+    instance, manager = instance_with_manager(CONFIG) do |sql|
+      next [] unless sql.start_with?('INSERT')
+      values = sql.scan(/\('([^']*)','([^']*)','([^']*)'\)/)
+      raise Mysql2::Error.new("Data truncated for column 'setting_query_pk' at row 1", nil, 1265, '01000') if values.any? {|_, pk, _| pk.include?('-') }
+      written.concat(values.map {|name, pk, _| [name, pk] })
+      []
+    end
+    instance.instance_variable_set(:@manager_db, manager)
+    instance.instance_variable_set(:@hash_table_bulk_insert, ["('users','1','h')", "('days','2026-11-01','h')"])
+    instance.flush_hash_table
+    assert_equal([['users', '1']], written)
+    assert_empty(instance.instance_variable_get(:@hash_table_bulk_insert))
+  end
+
+  # A failure of another kind, such as a lost connection while the rows are written one by one, keeps the buffer.
+  def test_lost_connection_while_writing_rows_one_by_one_keeps_the_buffer
+    inserts = 0
+    instance, manager = instance_with_manager(CONFIG) do |sql|
+      next [] unless sql.start_with?('INSERT')
+      inserts += 1
+      raise Mysql2::Error.new("Out of range value", nil, 1264, '22003') if inserts == 1
+      raise Mysql2::Error.new("Lost connection to MySQL server during query", nil, 2013, 'HY000')
+    end
+    instance.instance_variable_set(:@manager_db, manager)
+    instance.instance_variable_set(:@hash_table_bulk_insert, ["('users','1','h')"])
+    assert_raise(Mysql2::Error) { instance.flush_hash_table }
+    assert_equal(["('users','1','h')"], instance.instance_variable_get(:@hash_table_bulk_insert))
   end
 
   # A poller can add to the hash table buffer before the flusher thread has run at all.

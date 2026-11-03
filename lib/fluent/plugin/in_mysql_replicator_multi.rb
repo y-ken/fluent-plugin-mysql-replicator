@@ -276,36 +276,70 @@ module Fluent::Plugin
     end
 
     def hash_table_flusher
-      begin
-        while @running
-          if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
-            sleep @bulk_insert_timeout
-            next
-          end
-          @mutex.synchronize {
-            flush_hash_table
-          }
+      while @running
+        if @hash_table_bulk_insert.empty? || @bulk_insert_timeout > (Time.now - @hash_table_bulk_insert_last_time)
+          sleep @bulk_insert_timeout
+          next
         end
-        @mutex.synchronize {
-          flush_hash_table
-        }
-      rescue StandardError => e
-        @mutex.synchronize {
-          log.error "mysql_replicator_multi: failed to flush buffered query. :config=>#{masked_config}"
-          log.error "error: #{e.message}"
-          log.error e.backtrace.join("\n")
-        }
+        sleep @bulk_insert_timeout unless flush_hash_table_safely
       end
+      flush_hash_table_safely
+    end
+
+    # A failed flush, such as a timeout of the manager database, is logged, and the buffer stays for the next flush.
+    # Returns whether the flush succeeded.
+    def flush_hash_table_safely
+      @mutex.synchronize { flush_hash_table }
+      true
+    rescue StandardError => e
+      @mutex.synchronize {
+        log.error "mysql_replicator_multi: failed to flush buffered query."
+        log.error "error: #{e.message}"
+        log.error e.backtrace.join("\n")
+      }
+      false
     end
 
     def flush_hash_table
       return if @hash_table_bulk_insert.empty?
-      query = "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash)
-        VALUES #{@hash_table_bulk_insert.join(',')}
-        ON DUPLICATE KEY UPDATE setting_query_hash = VALUES(setting_query_hash)"
-      @manager_db.query(query)
+      begin
+        @manager_db.query(hash_table_insert_query(@hash_table_bulk_insert))
+      rescue Mysql2::Error => e
+        raise unless hash_table_cannot_hold?(e)
+        write_hash_table_rows_one_by_one(e)
+      end
       @hash_table_bulk_insert.clear
       @hash_table_bulk_insert_last_time = Time.now
+    end
+
+    def hash_table_insert_query(values)
+      "INSERT INTO hash_tables (setting_name,setting_query_pk,setting_query_hash)
+        VALUES #{values.join(',')}
+        ON DUPLICATE KEY UPDATE setting_query_hash = VALUES(setting_query_hash)"
+    end
+
+    # A row that hash_tables cannot hold, such as a primary key out of the range of setting_query_pk (INT) or one that is
+    # not a number, fails the whole statement, and would fail it on every flush, so that the rows of every setting
+    # stay out of hash_tables. The rows are then written one by one, and the ones that fail that way are dropped.
+    # They are sent as inserts again on each poll. A failure of another kind keeps the buffer for the next flush.
+    def write_hash_table_rows_one_by_one(error)
+      dropped = @hash_table_bulk_insert.count do |value|
+        begin
+          @manager_db.query(hash_table_insert_query([value]))
+          false
+        rescue Mysql2::Error => e
+          raise unless hash_table_cannot_hold?(e)
+          true
+        end
+      end
+      # Without the message of MySQL, which can quote the value.
+      log.error "mysql_replicator_multi: dropped #{dropped} rows that hash_tables cannot hold, with MySQL error #{error.error_number} (SQLSTATE #{error.sql_state}); they are sent as inserts again on each poll. Check that setting_query_pk can hold the primary keys of the settings."
+    end
+
+    # Errors in the data or the SQL (SQLSTATE class 22, 23, 21 or 42), "Data truncated" (1265, 01000), as for '12abc' or
+    # a date, and "Incorrect integer value" (1366, HY000).
+    def hash_table_cannot_hold?(error)
+      error.sql_state.to_s.start_with?('22', '23', '21', '42') || [1265, 1366].include?(error.error_number)
     end
 
     # Parse the given columns' JSON string values into nested objects in place.
