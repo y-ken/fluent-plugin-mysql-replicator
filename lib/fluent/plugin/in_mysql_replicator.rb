@@ -73,6 +73,7 @@ module Fluent::Plugin
     # Runs the query once, and emits the inserted, updated and deleted rows since the previous run.
     def poll_once
       rows_count = 0
+      skipped_count = 0
       start_time = Time.now
       previous_ids = @ids
       current_ids = Array.new
@@ -84,6 +85,12 @@ module Fluent::Plugin
       rows, @con = query(@query, @con)
       rows.each do |row|
         id = extract_id(row)
+        # A row without its primary key cannot be tracked, so it is skipped. Stopping here instead would leave the
+        # rows after it out of current_ids, and they would be sent as deleted.
+        if id.any?(&:nil?)
+          skipped_count += 1
+          next
+        end
         current_ids << id
         current_hash = Digest::SHA1.hexdigest(row.flatten.join)
         row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
@@ -97,10 +104,6 @@ module Fluent::Plugin
           end
           @prepared_con.close
         end
-        if id.any?(&:nil?)
-          log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')} :id=>#{id}"
-          break
-        end
         if !@table_hash.include?(id)
           tag = format_tag(@tag, {:event => :insert})
           emit_record(tag, row)
@@ -112,6 +115,9 @@ module Fluent::Plugin
         rows_count += 1
       end
       @con.close
+      if skipped_count > 0
+        log.error "mysql_replicator: skipped #{skipped_count} rows without the primary key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')}"
+      end
       @ids = current_ids
       if @enable_delete
         deleted_ids = detect_deleted_ids(previous_ids, current_ids)
