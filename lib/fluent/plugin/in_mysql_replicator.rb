@@ -127,7 +127,9 @@ module Fluent::Plugin
       if skipped_count > 0
         log.error "mysql_replicator: skipped #{skipped_count} rows without the primary key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')}"
       end
-      @ids = current_ids
+      # An empty result does not delete every row (see detect_deleted_ids). Keep the previous ids as the baseline, so
+      # that the rows that do not come back are deleted when the query returns rows again.
+      @ids = current_ids unless current_ids.empty?
       if @enable_delete
         deleted_ids = detect_deleted_ids(previous_ids, current_ids)
         if deleted_ids.count > 0
@@ -206,6 +208,8 @@ module Fluent::Plugin
     # the old `[*1...current_ids.max]` range, which raised "bad value for range"
     # for non-integer primary keys and allocated a huge array (and emitted
     # phantom deletes) for large / sparse integer ids. (#42)
+    #
+    # An empty result is not taken as "every row was deleted", and nothing is reported.
     def detect_deleted_ids(previous_ids, current_ids)
       return [] if previous_ids.empty?
       return [] if current_ids.empty?

@@ -386,6 +386,15 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal([['input.mysql.update.id', {'id' => 7, 'items' => [{'name' => 'a'}, {'name' => 'b'}]}]], events)
   end
 
+  # An empty result does not delete every row, but it must not drop the baseline either: when rows come back, the
+  # ones that did not are deleted.
+  def test_rows_missing_after_an_empty_result_are_deleted
+    rows = [{'id' => 1, 'name' => 'a'}, {'id' => 2, 'name' => 'b'}, {'id' => 3, 'name' => 'c'}]
+    _, empty, back = poll_tables(SIMPLE_CONFIG, rows, [], [rows[0]])
+    assert_equal([], empty)
+    assert_equal([['input.mysql.delete.id', {'id' => 2}], ['input.mysql.delete.id', {'id' => 3}]], back)
+  end
+
   def test_rows_after_a_null_primary_key_are_emitted
     rows = [{'id' => nil, 'name' => 'x'}, {'id' => 1, 'name' => 'a'}]
     first, = poll_tables(SIMPLE_CONFIG, rows)
