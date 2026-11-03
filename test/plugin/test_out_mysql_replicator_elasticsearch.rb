@@ -37,17 +37,22 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
 
   # The plugin detects the Elasticsearch version on the first write via GET /,
   # so stub that endpoint (defaulting to 6.x, which keeps "_type").
-  def stub_elastic_version(url, version="6.8.23")
-    stub_request(:get, url).to_return(
+  def stub_elastic_version(url, version="6.8.23", basic_auth: nil)
+    stub = stub_request(:get, url)
+    stub = stub.with(basic_auth: basic_auth) if basic_auth
+    stub.to_return(
       :status => 200,
       :headers => {"Content-Type" => "application/json"},
       :body => %({"version":{"number":"#{version}"}})
     )
   end
 
-  def stub_elastic(url="http://localhost:9200/_bulk")
-    stub_elastic_version(url.sub('/_bulk', '/'))
-    stub_request(:post, url).with do |req|
+  # webmock 3 matches the credentials with basic_auth, not with the user information in the URL.
+  def stub_elastic(url="http://localhost:9200/_bulk", basic_auth: nil)
+    stub_elastic_version(url.sub('/_bulk', '/'), basic_auth: basic_auth)
+    stub = stub_request(:post, url)
+    stub = stub.with(basic_auth: basic_auth) if basic_auth
+    stub.with do |req|
       @content_type = req.headers["Content-Type"]
       @index_cmds = req.body.split("\n").map {|r| JSON.parse(r, max_nesting: false) }
     end
@@ -401,7 +406,7 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
       username foo\n
       password bar\n
     ])
-    elastic_request = stub_elastic("http://foo:bar@localhost:9200/_bulk")
+    elastic_request = stub_elastic("http://localhost:9200/_bulk", basic_auth: ['foo', 'bar'])
     driver.run(default_tag: @tag) do
       driver.feed(sample_record)
     end
@@ -413,7 +418,7 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
       username wront_user\n
       password bar\n
     ])
-    elastic_request = stub_elastic("http://foo:bar@localhost:9200/_bulk")
+    elastic_request = stub_elastic("http://localhost:9200/_bulk", basic_auth: ['foo', 'bar'])
     assert_raise(WebMock::NetConnectNotAllowedError) {
       driver.run(default_tag: @tag) do
         driver.feed(sample_record)
