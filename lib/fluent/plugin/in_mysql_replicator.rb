@@ -62,8 +62,6 @@ module Fluent::Plugin
     def poll
       @table_hash = Hash.new
       @ids = Array.new
-      @con = get_connection()
-      @prepared_con = get_connection()
       loop do
         poll_once
         sleep @interval
@@ -77,11 +75,9 @@ module Fluent::Plugin
       start_time = Time.now
       previous_ids = @ids
       current_ids = Array.new
-      if !@prepared_query.nil?
-        @prepared_query.split(/;/).each do |query|
-          @prepared_con.query(query)
-        end
-      end
+      # The nested queries run on this connection, so that they see the session that prepared_query sets up. It is a
+      # new session for each poll, as a session cannot create the same temporary table twice.
+      @prepared_con = open_prepared_connection if !@prepared_query.nil?
       rows, @con = query(@query, @con)
       rows.each do |row|
         id = extract_id(row)
@@ -97,12 +93,11 @@ module Fluent::Plugin
         parse_json_columns!(row, @json_columns)
         row.select {|k, v| nested_query_value?(v) }.each do |k, v|
           row[k] = [] unless row[k].is_a?(Array)
-          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con)
+          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con) { open_prepared_connection }
           nest_rows.each do |nest_row|
             nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
             row[k] << nest_row
           end
-          @prepared_con.close
         end
         if !@table_hash.include?(id)
           tag = format_tag(@tag, {:event => :insert})
@@ -115,6 +110,7 @@ module Fluent::Plugin
         rows_count += 1
       end
       @con.close
+      @prepared_con.close if @prepared_con
       if skipped_count > 0
         log.error "mysql_replicator: skipped #{skipped_count} rows without the primary key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')}"
       end
@@ -136,6 +132,28 @@ module Fluent::Plugin
     # Replaces each ${column} in a nested query with the value of that column in the row.
     def expand_placeholders(query, row)
       query.gsub(/\$\{([^\}]+)\}/) { row[$1].to_s }
+    end
+
+    # Opens a connection and runs the statements of prepared_query on it. The results of a statement, such as a SELECT
+    # that sets a user variable or a CALL of a procedure that returns rows, are read out: the connection streams its
+    # results, and one left unread makes the next query on it fail. The connection is closed if a statement fails.
+    def open_prepared_connection
+      con = get_connection
+      @prepared_query.to_s.split(/;/).map(&:strip).reject(&:empty?).each do |statement|
+        read_out_results(con, con.query(statement))
+      end
+      con
+    rescue Exception
+      con.close if con
+      raise
+    end
+
+    def read_out_results(con, result)
+      result.each {} if result
+      while con.next_result
+        more = con.store_result
+        more.each {} if more
+      end
     end
 
     def hash_delete_by_list (hash, deleted_keys)
@@ -198,10 +216,16 @@ module Fluent::Plugin
       router.emit(tag, Fluent::Engine.now, record)
     end
 
-    def query(query, con = nil)
+    # Runs a query, and returns its result and the connection it ran on. A connection that is lost is closed and opened
+    # again, with the block if one is given (for the session of prepared_query), and the query is tried again after a
+    # failure.
+    def query(query, con = nil, &open)
+      open ||= method(:get_connection)
       begin
-        con = con.nil? ? get_connection : con
-        con = con.ping ? con : get_connection
+        if con.nil? || !con.ping
+          con.close if con
+          con = open.call
+        end
         return con.query(query), con
       rescue Exception => e
         log.warn "mysql_replicator: #{e}"

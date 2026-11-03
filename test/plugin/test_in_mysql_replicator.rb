@@ -204,6 +204,128 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal(['SELECT name FROM item WHERE parent_id = 7'], clients.flat_map(&:queries).grep(/\ASELECT name/))
   end
 
+  # prepared_query sets up the session that the nested queries run in, such as a temporary table.
+  def test_nested_queries_run_in_the_session_of_prepared_query_on_every_poll
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/ then [{'name' => 'n'}]
+      end
+    end
+    2.times { poll_once(instance) }
+    # A new session for each poll, as a session cannot create the same temporary table again.
+    sessions = clients.select {|c| c.queries.any? {|q| q.start_with?('CREATE') } }
+    assert_equal(2, sessions.size, clients.map(&:queries).inspect)
+    sessions.each do |session|
+      assert_equal(['CREATE', 'SELECT', 'SELECT'], session.queries.map {|q| q[/\A\w+/] })
+      assert_true(session.closed?)
+    end
+    assert_equal(2, events.size)
+  end
+
+  # A SELECT in prepared_query, such as one that sets a user variable, leaves its rows to be read on a connection that
+  # streams its results. They were not read, so the connection was out of sync, and each nested query ran on a new
+  # connection without the session (and the old one was not closed).
+  def test_prepared_query_with_a_select_keeps_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SELECT @flag := 1
+      query          SELECT id, "SELECT name, @flag AS flag FROM item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name, @flag AS flag FROM item WHERE parent_id = ${id}'}]
+      when /\ASELECT @flag/ then [{'@flag := 1' => 1}]
+      when /\ASELECT name/ then [{'name' => 'n', 'flag' => 1}]
+      end
+    end
+    poll_once(instance)
+    session = clients.find {|c| c.queries.first.start_with?('SELECT @flag') }
+    assert_equal(['SELECT @flag := 1', 'SELECT name, @flag AS flag FROM item WHERE parent_id = 1'], session.queries)
+    assert_equal(2, clients.size)
+    assert_equal(1, events.size)
+  end
+
+  # A CALL of a procedure that returns rows gives more than one result, all of which must be read before the next
+  # query on the connection.
+  def test_prepared_query_with_a_call_that_returns_rows_keeps_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CALL p_sel()
+      query          SELECT id, "SELECT name FROM item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/ then [{'name' => 'n'}]
+      end
+    end
+    open_client = instance.method(:get_connection)
+    instance.define_singleton_method(:get_connection) do
+      open_client.call.tap do |c|
+        # The rows of the procedure, then its status, after the result of CALL itself.
+        c.define_singleton_method(:query) do |sql|
+          raise Mysql2::Error, "Commands out of sync; you can't run this command now" unless more_results.empty?
+          super(sql).tap { more_results.push([{'ok' => 1}], []) if sql.start_with?('CALL') }
+        end
+        c.define_singleton_method(:ping) { super() && more_results.empty? }
+      end
+    end
+    poll_once(instance)
+    session = clients.find {|c| c.queries.first.start_with?('CALL') }
+    assert_equal(['CALL p_sel()', 'SELECT name FROM item WHERE parent_id = 1'], session.queries)
+    assert_equal(2, clients.size)
+    assert_equal(1, events.size)
+  end
+
+  # A connection for the nested queries that is lost in the middle of a poll is opened again with prepared_query, and
+  # the lost one is closed.
+  def test_lost_connection_of_prepared_query_is_opened_again_with_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    clients = nil
+    lost = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/
+        unless lost
+          lost = true
+          clients.find {|c| c.queries.last == sql }.close
+        end
+        [{'name' => 'n'}]
+      end
+    end
+    poll_once(instance)
+    sessions = clients.select {|c| c.queries.first.start_with?('CREATE') }
+    assert_equal([['CREATE', 'SELECT'], ['CREATE', 'SELECT']], sessions.map {|c| c.queries.map {|q| q[/\A\w+/] } })
+    assert_true(sessions.all?(&:closed?))
+    assert_equal(2, events.size)
+  end
+
+  def test_prepared_query_ending_with_a_semicolon_and_a_newline
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SET @a = 1
+      query          SELECT id FROM t
+    ]
+    instance, events, _ = polling_instance(conf) {|sql| sql.start_with?('SELECT') ? [{'id' => 1}] : [] }
+    # A config value cannot end with a newline, but a value from a multi-line config or a script can.
+    instance.instance_variable_set(:@prepared_query, "SET @a = 1;\n")
+    poll_once(instance)
+    assert_equal(1, events.size)
+  end
+
   SIMPLE_CONFIG = %[
     tag   input.mysql.${event}.${primary_key}
     query SELECT id, name FROM t

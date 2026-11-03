@@ -92,8 +92,16 @@ module Fluent::Plugin
           begin
             unless config['prepared_query'].nil?
               nest_db = get_origin_connection(config)
-              config['prepared_query'].strip.split(/;/).each do |query|
-                nest_db.query(query)
+              # The results of a statement, such as a SELECT that sets a user variable or a CALL of a procedure that
+              # returns rows, are read out: the connection streams its results, and one left unread makes the next
+              # query on it fail.
+              config['prepared_query'].split(/;/).map(&:strip).reject(&:empty?).each do |query|
+                result = nest_db.query(query)
+                result.each {} if result
+                while nest_db.next_result
+                  more = nest_db.store_result
+                  more.each {} if more
+                end
               end
             end
             db = get_origin_connection(config)
