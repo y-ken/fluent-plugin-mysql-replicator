@@ -404,6 +404,146 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_not_requested(put_tmpl)
   end
 
+  # Records the bulk requests of a run, one array of parsed lines per request.
+  def stub_bulk_requests(url="http://localhost:9200/_bulk")
+    bulks = []
+    stub_request(:post, url).with {|req| bulks << req.body.split("\n").map {|r| JSON.parse(r) } }
+    bulks
+  end
+
+  def version_response(version)
+    {:status => 200, :headers => {"Content-Type" => "application/json"}, :body => %({"version":{"number":"#{version}"}})}
+  end
+
+  # Elasticsearch may not answer yet on the first write, for example when both start together. The version is then
+  # detected again on the next write, instead of sending "_type" to Elasticsearch 8 until a restart.
+  def test_detects_the_version_again_after_a_failed_detection
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_return({:status => 503, :body => "unavailable"}, version_response("8.18.0"))
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+      driver.flush
+      driver.feed(sample_record)
+      driver.flush
+    end
+    assert_equal('mytype', bulks[0][0]['index']['_type'])
+    assert_false(bulks[1][0]['index'].has_key?('_type'))
+  end
+
+  def test_installs_the_template_again_after_a_failed_install
+    stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return({:status => 500, :body => "{}"}, {:status => 200, :body => "{}"})
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+      driver.flush
+      driver.feed(sample_record)
+      driver.flush
+      driver.feed(sample_record)
+      driver.flush
+    end
+    assert_requested(put_tmpl, :times => 2)
+  end
+
+  # The composable template needs the version. While it is unknown, the template is not skipped for good.
+  def test_installs_the_composable_template_once_the_version_is_known
+    stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_return({:status => 503, :body => "unavailable"}, version_response("8.18.0"))
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+      driver.flush
+      driver.feed(sample_record)
+      driver.flush
+    end
+    assert_requested(put_tmpl, :times => 1)
+  end
+
+  def three_writes
+    driver.run(default_tag: @tag) do
+      3.times do
+        driver.feed(sample_record)
+        driver.flush
+      end
+    end
+  end
+
+  def log_lines(level)
+    driver.logs.grep(/\[#{level}\]: mysql_replicator_elasticsearch/)
+  end
+
+  # A connection error, like a 5xx, may go away, so the version is detected again on the next write.
+  def test_detects_the_version_again_after_a_connection_error
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_raise(Errno::ECONNREFUSED).then.to_return(version_response("8.18.0"))
+    three_writes
+    assert_equal(['mytype', nil, nil], bulks.map {|lines| lines[0]['index']['_type'] })
+  end
+
+  # 429, such as circuit_breaking_exception while the node is busy, can succeed later, like a 5xx.
+  def test_detects_the_version_again_after_a_429
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_return(:status => 429, :body => '{"error":"circuit_breaking_exception"}').then.to_return(version_response("8.18.0"))
+    three_writes
+    assert_equal(['mytype', nil, nil], bulks.map {|lines| lines[0]['index']['_type'] })
+    assert_empty(log_lines('error'))
+  end
+
+  # A 4xx on GET /, such as 403 for a user without the monitor privilege, fails the same way on every write. It is
+  # logged once, and "_type" is sent (assuming 6.x) until a restart, as before.
+  def test_does_not_detect_the_version_again_after_a_4xx
+    bulks = stub_bulk_requests
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 403, :body => '{"error":"unauthorized"}')
+    three_writes
+    assert_requested(get_root, :times => 1)
+    assert_equal(['mytype'] * 3, bulks.map {|lines| lines[0]['index']['_type'] })
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+  end
+
+  # A 4xx on the template, such as 400 for a broken template file, fails the same way on every write.
+  def test_does_not_install_the_template_again_after_a_4xx
+    stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 400, :body => '{"error":"bad template"}')
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_tmpl, :times => 1)
+    assert_requested(put_tmpl, :times => 1)
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+  end
+
+  def test_does_not_install_the_template_again_after_a_4xx_on_its_check
+    stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 403)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_tmpl, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(1, log_lines('error').size)
+  end
+
+  # The composable template needs the version. When it cannot be detected for good, the template is given up too.
+  def test_gives_up_the_composable_template_when_the_version_cannot_be_detected
+    stub_bulk_requests
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 403)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_root, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(2, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+  end
+
   def test_template_name_without_file_raises
     assert_raise(Fluent::ConfigError) do
       driver.configure("template_name my_tmpl\n")
