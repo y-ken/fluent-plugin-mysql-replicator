@@ -59,6 +59,27 @@ The optional columns have sensible defaults:
 * `enable_loose_insert` / `enable_loose_delete` — speed/accuracy trade-offs for
   insert/delete detection.
 
+##### how deletes are detected
+
+With `enable_delete` set, a row that is in `hash_tables` but no longer in the
+result of `query` is sent as deleted, and removed from `hash_tables`. This is
+what `mysql_replicator` does too. A poll whose query returns no row deletes
+nothing, and a poll that fails deletes nothing after the row where it failed.
+
+The result of `query` decides, not the table: a row that leaves the result is
+deleted downstream even when it is still in the table. So for a query whose
+range moves, such as `WHERE id >= 1000` (with the bound raised later) or
+`WHERE updated_at > NOW() - INTERVAL 7 DAY`, every row that leaves the range is
+sent as deleted. To keep such rows downstream, set `enable_delete` to `0`.
+
+> Upgrading from 1.4.x: versions before 1.5.0 did not look at the rows of
+> `hash_tables` before the first row of the result. On the first poll after the
+> upgrade, the rows of `hash_tables` that are before the first row of the result,
+> for example rows that left the range of a query like the ones above, are sent as
+> deleted at once, and removed from `hash_tables`, so they cannot be restored by
+> the plugin. If you want to keep them, set `enable_delete` to `0` before you
+> upgrade.
+
 ### configuration
 
 `````

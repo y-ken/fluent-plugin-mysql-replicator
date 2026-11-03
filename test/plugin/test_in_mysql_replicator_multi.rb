@@ -99,6 +99,41 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_equal([2], deletes(second))
   end
 
+  # previous_id was carried over from the last row of the previous poll, so the first row of a poll was compared with
+  # it, and the rows before the first row were never looked at.
+  def test_deleted_first_row_is_detected
+    _, second, third = run_polls(setting, users(1, 2, 3), users(2, 3), users(2, 3))
+    assert_equal([1], deletes(second))
+    assert_equal([], third)
+  end
+
+  def test_deleted_first_row_is_detected_with_loose_delete
+    _, second = run_polls(setting('enable_loose_delete' => 1), users(1, 2, 3), users(2, 3))
+    assert_equal([1], deletes(second))
+  end
+
+  # The rows after the last row were looked at only at the first row of the next poll.
+  def test_deleted_last_row_is_detected_in_the_same_poll
+    _, second = run_polls(setting, users(1, 2, 3), users(1, 2))
+    assert_equal([3], deletes(second))
+  end
+
+  # With enable_retry, a poll that fails after some rows must not make the next poll take the rows after them as
+  # deleted.
+  def test_poll_that_fails_in_the_middle_does_not_delete_the_rest
+    failing = -> { Enumerator.new {|y| users(1, 2, 3).each {|row| y << row }; raise Mysql2::Error, 'Lost connection to MySQL server during query' } }
+    _, second, third = run_polls(setting('enable_retry' => 1), users(1, 2, 3, 4, 5), failing, users(1, 2, 3, 4, 5))
+    assert_equal([], second)
+    assert_equal([], third)
+  end
+
+  # A JOIN can give the same primary key twice in a row. The first row of the pair was compared with the second as
+  # "the same id", which took every other row of hash_tables as deleted.
+  def test_duplicate_primary_keys_do_not_delete_the_other_rows
+    _, second = run_polls(setting, users(1, 2, 3), users(1, 2, 2, 3))
+    assert_equal([], second)
+  end
+
   # A LEFT JOIN, for example, can give a row whose primary key is NULL. It is skipped, and the rows around it are
   # still compared with each other, so a row deleted next to it is detected.
   def test_row_with_null_primary_key_is_skipped_and_deletes_around_it_are_detected
@@ -300,6 +335,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     test = self
     instance.define_singleton_method(:emit_record) {|tag, record| polls.last << [tag, record] }
     instance.define_singleton_method(:update_hashtable) {|_opts| }
+    instance.define_singleton_method(:detect_delete) {|*_args| }
     instance.define_singleton_method(:get_origin_connection) do |_config, reconnect = true|
       failure = failures[polls.size - 1]
       client = FakeMysqlClient.new do |sql|
@@ -340,9 +376,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   end
 
   # The connection of prepared_query lost in the middle of a poll, which does not connect again: the rest of the poll is
-  # skipped with one line, whether enable_retry is set or not. The next poll does not compare its first row with the
-  # last row seen, which would make the rows after it look deleted, nor again with the poll before, which the first row
-  # of the skipped poll did.
+  # skipped with one line, whether enable_retry is set or not, without the deletes after the last row seen.
   def test_lost_connection_of_prepared_query_skips_the_rest_of_the_poll
     instance = create_driver.instance
     config = {
@@ -381,7 +415,8 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     @polled_instance = instance
     Timeout.timeout(10) { instance.poll(config) }
     assert_equal([[1, 2, 3], [1], [1, 2, 3]], polls)
-    assert_equal([[1, nil], [2, 1], [3, 2], [1, 3], [1, nil], [2, 1], [3, 2]], compared)
+    # Each poll compares from its own first row; the skipped one has no deletes after the last row seen.
+    assert_equal([[1, nil], [2, 1], [3, 2], [nil, 3], [1, nil], [1, nil], [2, 1], [3, 2], [nil, 3]], compared)
     logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
     assert_equal(1, logs.size, logs.inspect)
     assert_match(/\[error\]: mysql_replicator_multi: lost the connection of prepared_query; skipped the rest of this poll\. :setting_name=>users :errno=>2013 :sql_state=>HY000$/, logs.first)
