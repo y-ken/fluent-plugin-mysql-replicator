@@ -60,66 +60,76 @@ module Fluent::Plugin
     end
 
     def poll
-      table_hash = Hash.new
-      ids = Array.new
-      con = get_connection()
-      prepared_con = get_connection()
+      @table_hash = Hash.new
+      @ids = Array.new
+      @con = get_connection()
+      @prepared_con = get_connection()
       loop do
-        rows_count = 0
-        start_time = Time.now
-        previous_ids = ids
-        current_ids = Array.new
-        if !@prepared_query.nil?
-          @prepared_query.split(/;/).each do |query|
-            prepared_con.query(query)
-          end
-        end
-        rows, con = query(@query, con)
-        rows.each do |row|
-          id = extract_id(row)
-          current_ids << id
-          current_hash = Digest::SHA1.hexdigest(row.flatten.join)
-          row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-          parse_json_columns!(row, @json_columns)
-          row.select {|k, v| nested_query_value?(v) }.each do |k, v|
-            row[k] = [] unless row[k].is_a?(Array)
-            nest_rows, prepared_con = query(v.gsub(/\$\{([^\}]+)\}/, row[$1].to_s), prepared_con)
-            nest_rows.each do |nest_row|
-              nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-              row[k] << nest_row
-            end
-            prepared_con.close
-          end
-          if id.any?(&:nil?)
-            log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')} :id=>#{id}"
-            break
-          end
-          if !table_hash.include?(id)
-            tag = format_tag(@tag, {:event => :insert})
-            emit_record(tag, row)
-          elsif table_hash[id] != current_hash
-            tag = format_tag(@tag, {:event => :update})
-            emit_record(tag, row)
-          end
-          table_hash[id] = current_hash
-          rows_count += 1
-        end
-        con.close
-        ids = current_ids
-        if @enable_delete
-          deleted_ids = detect_deleted_ids(previous_ids, current_ids)
-          if deleted_ids.count > 0
-            hash_delete_by_list(table_hash, deleted_ids)
-            deleted_ids.each do |id|
-              tag = format_tag(@tag, {:event => :delete})
-              emit_record(tag, Hash[@primary_key.zip(id)])
-            end
-          end
-        end
-        elapsed_time = sprintf("%0.02f", Time.now - start_time)
-        log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
+        poll_once
         sleep @interval
       end
+    end
+
+    # Runs the query once, and emits the inserted, updated and deleted rows since the previous run.
+    def poll_once
+      rows_count = 0
+      start_time = Time.now
+      previous_ids = @ids
+      current_ids = Array.new
+      if !@prepared_query.nil?
+        @prepared_query.split(/;/).each do |query|
+          @prepared_con.query(query)
+        end
+      end
+      rows, @con = query(@query, @con)
+      rows.each do |row|
+        id = extract_id(row)
+        current_ids << id
+        current_hash = Digest::SHA1.hexdigest(row.flatten.join)
+        row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+        parse_json_columns!(row, @json_columns)
+        row.select {|k, v| nested_query_value?(v) }.each do |k, v|
+          row[k] = [] unless row[k].is_a?(Array)
+          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con)
+          nest_rows.each do |nest_row|
+            nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+            row[k] << nest_row
+          end
+          @prepared_con.close
+        end
+        if id.any?(&:nil?)
+          log.error "mysql_replicator: missing primary_key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')} :id=>#{id}"
+          break
+        end
+        if !@table_hash.include?(id)
+          tag = format_tag(@tag, {:event => :insert})
+          emit_record(tag, row)
+        elsif @table_hash[id] != current_hash
+          tag = format_tag(@tag, {:event => :update})
+          emit_record(tag, row)
+        end
+        @table_hash[id] = current_hash
+        rows_count += 1
+      end
+      @con.close
+      @ids = current_ids
+      if @enable_delete
+        deleted_ids = detect_deleted_ids(previous_ids, current_ids)
+        if deleted_ids.count > 0
+          hash_delete_by_list(@table_hash, deleted_ids)
+          deleted_ids.each do |id|
+            tag = format_tag(@tag, {:event => :delete})
+            emit_record(tag, Hash[@primary_key.zip(id)])
+          end
+        end
+      end
+      elapsed_time = sprintf("%0.02f", Time.now - start_time)
+      log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
+    end
+
+    # Replaces each ${column} in a nested query with the value of that column in the row.
+    def expand_placeholders(query, row)
+      query.gsub(/\$\{([^\}]+)\}/) { row[$1].to_s }
     end
 
     def hash_delete_by_list (hash, deleted_keys)
