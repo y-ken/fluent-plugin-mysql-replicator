@@ -112,6 +112,17 @@ sent as deleted. To keep such rows downstream, set `enable_delete` to `0`.
 > ALTER TABLE hash_tables ADD KEY setting_name (setting_name, setting_query_pk);
 > ```
 
+##### how updates are detected
+
+A row is sent as an update when the SHA1 of its values, kept in `hash_tables`,
+changes. Since 1.5.0 the hash tells NULL from `''` and keeps the boundaries
+between the columns, as in `mysql_replicator`. The hashes that 1.4.x stored are
+replaced on the first poll after the upgrade, without sending the rows that did
+not change (one UPDATE to `hash_tables` for each row, once).
+
+> Downgrading to 1.4.x after that poll sends every row as an update once, as
+> 1.4.x does not know the new hashes.
+
 ### configuration
 
 `````

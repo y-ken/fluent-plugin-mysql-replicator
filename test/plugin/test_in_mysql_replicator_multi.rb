@@ -228,6 +228,31 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_equal([['users', 1]], hash_tables.rows.keys)
   end
 
+  # The hash was taken from row.flatten.join, which writes nil and "" the same way and has no separator between the
+  # columns, so these changes were not updates.
+  def test_change_between_null_and_empty_string_is_an_update
+    _, second = run_polls(setting, [{'id' => 1, 'name' => nil}], [{'id' => 1, 'name' => ''}])
+    assert_equal([['replicator.users.update.id', {'id' => 1, 'name' => ''}]], second)
+  end
+
+  def test_change_that_moves_characters_between_columns_is_an_update
+    _, second = run_polls(setting, [{'id' => 1, 'a' => 'xb', 'b' => ''}], [{'id' => 1, 'a' => 'x', 'b' => 'b'}])
+    assert_equal([['replicator.users.update.id', {'id' => 1, 'a' => 'x', 'b' => 'b'}]], second)
+  end
+
+  # hash_tables keeps the hashes of 1.4.x after an upgrade. A row whose stored hash is its old hash did not change, so
+  # the new hash is stored without sending it, instead of sending every row as an update once.
+  def test_hash_stored_by_an_older_version_is_replaced_without_sending_the_row
+    hash_tables = FakeHashTables.new
+    hash_tables.rows[['users', 1]] = Digest::SHA1.hexdigest(users(1).first.flatten.join)
+    hash_tables.rows[['users', 2]] = Digest::SHA1.hexdigest({'id' => 2, 'name' => 'old'}.flatten.join)
+    first, second, third = run_polls(setting, users(1, 2), users(1, 2), [{'id' => 1, 'name' => 'new'}, users(2).first], hash_tables: hash_tables)
+    assert_equal([['replicator.users.update.id', {'id' => 2, 'name' => 'user2'}]], first)
+    assert_equal([], second)
+    assert_equal([['replicator.users.update.id', {'id' => 1, 'name' => 'new'}]], third)
+    assert_equal(Digest::SHA1.hexdigest(Marshal.dump({'id' => 1, 'name' => 'new'})), hash_tables.rows[['users', 1]])
+  end
+
   # A LEFT JOIN, for example, can give a row whose primary key is NULL. It is skipped, and the rows around it are
   # still compared with each other, so a row deleted next to it is detected.
   def test_row_with_null_primary_key_is_skipped_and_deletes_around_it_are_detected
