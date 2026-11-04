@@ -130,7 +130,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
       end.tap {|c| managers << c }
     end
     polled = Queue.new
-    instance.define_singleton_method(:get_origin_connection) do |config|
+    instance.define_singleton_method(:get_origin_connection) do |config, _reconnect = true|
       FakeMysqlClient.new {|sql| polled << sql if sql == config['query']; users(1) }
     end
     instance.define_singleton_method(:emit_record) {|_tag, _record| }
