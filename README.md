@@ -278,6 +278,31 @@ The backup directory is `backup/` under the `root_dir` of `<system>`, or under
 same. With `disable_chunk_backup true` in `<buffer>`, the chunk is thrown away
 instead.
 
+## Documents that fail in a bulk request
+
+Elasticsearch answers a bulk request with 200 even when some of its documents
+fail, and reports them per document. The Elasticsearch output logs them (the
+index, the status and the type of the error, without the values).
+
+When a document fails with 429 (for example, a full write queue, or an index
+blocked by the disk flood-stage watermark) or a 5xx, the output writes the whole
+chunk again, with the retry and backoff of `<buffer>`. Each action has the `_id`
+of its primary key and the actions keep their order, so writing the chunk again
+leaves the same documents. A document that fails with another 4xx, such as a
+mapping error, is only logged.
+
+* While a chunk is written again, the chunks after it wait, including those for
+  other indices. If an index keeps failing with 429 or 5xx, writing stops for all
+  the indices of that output until `retry_timeout` (72 hours by default) or
+  `retry_max_times`, and then Fluentd drops every chunk of its queue. Configure
+  `<secondary>` (for example `@type secondary_file`) to keep them, and watch the
+  log for "writing the chunk again".
+* A chunk with a document that has no `_id` (its primary key is missing or NULL)
+  is not written again, as Elasticsearch would add another copy of that document
+  on each try. A warning says so.
+* Chunks keep their order only with one flush thread (`flush_thread_count 1`, the
+  default).
+
 ## Output example
 
 An example of detecting insert/update/delete events.

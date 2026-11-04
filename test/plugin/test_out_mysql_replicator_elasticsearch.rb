@@ -698,6 +698,54 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_empty(driver.logs.grep(/\[error\]/))
   end
 
+  def bulk_response(*statuses)
+    items = statuses.each_with_index.map do |status, i|
+      item = {'_index' => 'myindex', '_id' => (i + 1).to_s, 'status' => status}
+      item['error'] = {'type' => status == 429 ? 'es_rejected_execution_exception' : 'some_exception', 'reason' => 'xyzzy'} if status >= 300
+      {'index' => item}
+    end
+    {:status => 200, :headers => {"Content-Type" => "application/json"}, :body => JSON.generate({'errors' => statuses.any? {|s| s >= 300 }, 'items' => items})}
+  end
+
+  # A document that failed with 429 or 5xx can succeed later, so the chunk is written again by Fluentd's retry.
+  def test_retries_the_chunk_when_a_document_failed_with_429_or_5xx
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    bulk = stub_request(:post, "http://localhost:9200/_bulk").to_return(bulk_response(201, 429, 400, 503))
+    error = assert_raise(Fluent::Plugin::MysqlReplicatorElasticsearchOutput::RetriableBulkError) do
+      driver.run(default_tag: @tag) do
+        4.times {|i| driver.feed(sample_record.merge('id' => i + 1)) }
+      end
+    end
+    assert_match(/2 documents failed with a status that can succeed later \(429 x1, 503 x1\); writing the chunk again/, error.message)
+    assert_not_match(/xyzzy/, error.message)
+    assert_requested(bulk, :times => 1)
+  end
+
+  # A document without an _id gets a new one each time it is written, so writing its chunk again would add a copy.
+  def test_does_not_retry_a_chunk_with_a_document_without_an_id
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    bulk = stub_request(:post, "http://localhost:9200/_bulk").to_return(bulk_response(201, 429))
+    assert_nothing_raised do
+      driver.run(default_tag: @tag) do
+        driver.feed(sample_record)
+        driver.feed(sample_record.merge('id' => 2))
+      end
+    end
+    assert_requested(bulk, :times => 1)
+    assert_equal(1, log_lines('warn').grep(/1 documents failed with a status that can succeed later \(429 x1\), but the chunk is not written again, as 1 documents in it have no _id/).size)
+  end
+
+  # A document that failed with another 4xx, such as a mapping error, would fail the same way again.
+  def test_does_not_retry_the_chunk_for_documents_that_failed_with_4xx
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(bulk_response(201, 400, 409))
+    assert_nothing_raised do
+      driver.run(default_tag: @tag) do
+        3.times { driver.feed(sample_record) }
+      end
+    end
+  end
+
   def test_template_name_without_file_raises
     assert_raise(Fluent::ConfigError) do
       driver.configure("template_name my_tmpl\n")
