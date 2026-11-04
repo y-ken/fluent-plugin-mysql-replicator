@@ -1,6 +1,6 @@
 require 'net/http'
 require 'date'
-require 'yajl'
+require 'json'
 require 'fluent/plugin/output'
 
 class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Output
@@ -87,6 +87,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     install_template_once if @template_name
 
     bulk_message = []
+    utf8 = Utf8Converter.new
 
     chunk.msgpack_each do |tag, time, record|
       tag_parts = tag.match(@tag_format)
@@ -97,20 +98,23 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       if tag_parts['event'] == 'delete'
         action = {"_index" => target_index, "_id" => join_id(record, id_keys)}
         action['_type'] = target_type unless @suppress_type
-        meta = { "delete" => action }
-        bulk_message << Yajl::Encoder.encode(meta)
+        meta = { "delete" => utf8.convert(action) }
+        bulk_message << JSON.generate(meta)
       else
         action = {"_index" => target_index}
         action['_type'] = target_type unless @suppress_type
         if !id_keys.empty? && id_keys.all? {|k| !record[k].nil? }
           action['_id'] = join_id(record, id_keys)
         end
-        meta = { "index" => action }
-        bulk_message << Yajl::Encoder.encode(meta)
-        bulk_message << Yajl::Encoder.encode(record)
+        meta = { "index" => utf8.convert(action) }
+        bulk_message << JSON.generate(meta)
+        bulk_message << JSON.generate(utf8.convert(record))
       end
     end
     bulk_message << ""
+    if utf8.replaced > 0
+      log.warn "mysql_replicator_elasticsearch: replaced the bytes that are not valid UTF-8 with U+FFFD in #{utf8.replaced} values"
+    end
 
     request = Net::HTTP::Post.new('/_bulk', {'content-type' => 'application/json; charset=utf-8'})
     if @username && @password
@@ -127,6 +131,48 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     http = Net::HTTP.new(@host, @port.to_i)
     http.use_ssl = @ssl
     http
+  end
+
+  # Converts the strings of a record to UTF-8 before JSON.generate. mysql2 gives BLOB and BINARY columns as ASCII-8BIT
+  # strings. yajl, which this plugin used before, wrote their bytes as they were. The json gem raises for them, or,
+  # from 2.10 to 2.x, writes them with a warning for each value when their bytes are valid UTF-8. So a binary string
+  # is read as UTF-8 here, and the bytes that are not valid UTF-8 are replaced with U+FFFD, and counted.
+  class Utf8Converter
+    attr_reader :replaced
+
+    def initialize
+      @replaced = 0
+    end
+
+    def convert(value)
+      case value
+      when Hash
+        value.each_with_object({}) {|(k, v), h| h[convert(k)] = convert(v) }
+      when Array
+        value.map {|v| convert(v) }
+      when String
+        convert_string(value)
+      else
+        value
+      end
+    end
+
+    private
+
+    def convert_string(value)
+      return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+      if value.encoding == Encoding::UTF_8 || value.encoding == Encoding::BINARY || value.encoding == Encoding::US_ASCII
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        return utf8 if utf8.valid_encoding?
+        @replaced += 1
+        return utf8.scrub
+      end
+      # Another character set, such as latin1, is converted as the json gem does.
+      value.encode(Encoding::UTF_8)
+    rescue EncodingError
+      @replaced += 1
+      value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
+    end
   end
 
   # Build the document _id from one or more primary-key columns. A single key
@@ -164,7 +210,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     request = Net::HTTP::Get.new('/')
     request.basic_auth(@username, @password) if @username && @password
     response = new_http.request(request)
-    number = Yajl::Parser.parse(response.body).dig('version', 'number')
+    number = JSON.parse(response.body).dig('version', 'number')
     return nil if number.nil?
     number.to_s.split('.').first(2).map(&:to_i)
   rescue => e

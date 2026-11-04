@@ -101,6 +101,59 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal('10,7', index_cmds.first['index']['_id'])
   end
 
+  # Runs the block and returns the Ruby warnings of the json gem that it printed. json 2.10 to 2.x warns for each
+  # binary string ("UTF-8 string passed as BINARY").
+  def json_warnings
+    original_stderr = $stderr
+    $stderr = StringIO.new
+    yield
+    $stderr.string.lines.grep(/json|BINARY/i)
+  ensure
+    $stderr = original_stderr
+  end
+
+  # mysql2 gives BLOB and BINARY columns as ASCII-8BIT strings. yajl wrote their bytes as they were. The json gem
+  # raises for them, or writes them with a warning (json 2.10 to 2.x), so they are converted to UTF-8 before.
+  def test_writes_binary_string_as_utf8
+    stub_elastic
+    warnings = json_warnings do
+      driver.run(default_tag: @tag) do
+        driver.feed({'id' => 1, 'blob' => "caf\u00e9".b, 'emoji' => "\u{1F600}".b})
+      end
+    end
+    assert_equal(["caf\u00e9", "\u{1F600}"], index_cmds[1].values_at('blob', 'emoji'))
+    assert_empty(warnings)
+    assert_empty(driver.logs.grep(/U\+FFFD/))
+  end
+
+  # Bytes that are not valid UTF-8 are replaced, with one warning for the chunk that gives the number of values.
+  def test_replaces_bytes_that_are_not_utf8
+    stub_elastic
+    warnings = json_warnings do
+      driver.run(default_tag: @tag) do
+        driver.feed({'id' => 1, 'blob' => "a\xFFb".b})
+        driver.feed({'id' => 2, 'blob' => "c\xFEd".b, 'text' => "e\xFFf".dup.force_encoding('UTF-8')})
+      end
+    end
+    assert_equal(["a\uFFFDb", "c\uFFFDd", "e\uFFFDf"], [index_cmds[1]['blob'], index_cmds[3]['blob'], index_cmds[3]['text']])
+    assert_empty(warnings)
+    replaced = driver.logs.grep(/U\+FFFD/)
+    assert_equal(1, replaced.size)
+    assert_match(/\[warn\]: mysql_replicator_elasticsearch: replaced the bytes that are not valid UTF-8 with U\+FFFD in 3 values$/, replaced.first)
+  end
+
+  # A primary key that is a BINARY column becomes the document _id.
+  def test_writes_binary_primary_key_as_utf8
+    stub_elastic
+    warnings = json_warnings do
+      driver.run(default_tag: 'myindex.mytype.delete.id') do
+        driver.feed({'id' => "k\u00e9y".b})
+      end
+    end
+    assert_equal("k\u00e9y", index_cmds[0]['delete']['_id'])
+    assert_empty(warnings)
+  end
+
   def test_writes_to_speficied_type
     driver.configure("type_name mytype\n")
     stub_elastic
