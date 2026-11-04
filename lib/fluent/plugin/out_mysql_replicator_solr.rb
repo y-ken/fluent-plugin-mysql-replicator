@@ -1,5 +1,5 @@
 require 'rsolr'
-require 'uri'
+require 'erb'
 require 'fluent/plugin/output'
 
 class Fluent::Plugin::MysqlReplicatorSolrOutput < Fluent::Plugin::Output
@@ -60,7 +60,8 @@ class Fluent::Plugin::MysqlReplicatorSolrOutput < Fluent::Plugin::Output
       tag_parts = tag.match(@tag_format)
       id_key = tag_parts['primary_key']
       core_name = tag_parts['core_name'].nil? ? '' : tag_parts['core_name']
-      url = "http://#{@host}:#{@port}/solr/#{URI.escape(core_name)}"
+      # URI.escape was removed in Ruby 3.0. The core name is one segment of the path.
+      url = "http://#{@host}:#{@port}/solr/#{ERB::Util.url_encode(core_name)}"
       solr_connection[url] = RSolr.connect(:url => url) if solr_connection[url].nil?
       if tag_parts['event'] == 'delete'
         solr_connection[url].delete_by_id record[id_key]
@@ -70,6 +71,6 @@ class Fluent::Plugin::MysqlReplicatorSolrOutput < Fluent::Plugin::Output
         solr_connection[url].add message
       end
     end
-    solr_connection.each {|solr| solr.commit }
+    solr_connection.each_value(&:commit)
   end
 end

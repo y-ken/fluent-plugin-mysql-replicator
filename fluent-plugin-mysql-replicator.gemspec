@@ -16,7 +16,7 @@ Gem::Specification.new do |s|
   s.required_ruby_version = "> 2.1"
 
   s.add_development_dependency "rake"
-  s.add_development_dependency "webmock", "~> 1.24.0"
+  s.add_development_dependency "webmock", "~> 3.0"
   s.add_development_dependency "test-unit", ">= 3.1.0"
 
   s.add_runtime_dependency "fluentd", [">= 0.14.15", "< 2"]
