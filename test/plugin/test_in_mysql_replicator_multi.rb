@@ -53,7 +53,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   # Runs poll(config) for one poll per table, and returns the events of each poll as [tag, record]. A table is the
   # rows of the query, or a Proc that returns them. The sleep after each poll moves on to the next table, and
   # hash_tables is a FakeHashTables that is written at once (bulk_insert_count 1).
-  def run_polls(config, *tables)
+  def run_polls(config, *tables, origin: nil)
     hash_tables = FakeHashTables.new
     instance, manager = instance_with_manager(CONFIG + "bulk_insert_count 1\n") {|sql| hash_tables.call(sql) }
     instance.instance_variable_set(:@manager_db, manager)
@@ -65,6 +65,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     instance.define_singleton_method(:emit_record) {|tag, record| polls.last << [tag, record] }
     instance.define_singleton_method(:get_origin_connection) do |_config, _reconnect = true|
       FakeMysqlClient.new do |sql|
+        next origin.call(sql) if origin && sql != config['query']
         next [] unless sql == config['query']
         table = tables[polls.size - 1]
         table.respond_to?(:call) ? table.call : table
@@ -112,6 +113,41 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     skipped = logs('error').grep(/skipped/)
     assert_equal(2, skipped.size)
     assert_match(/mysql_replicator_multi: skipped 2 rows without the primary key\. :setting_name=>users :primary_key=>id$/, skipped.first)
+  end
+
+  def nested_queries_for(template)
+    queries = []
+    row = {'id' => 1, 'name' => "O'Brien", 'cond' => "owner = 'alice'", 'items' => template}
+    run_polls(setting, [row], origin: ->(sql) { queries << sql; [] })
+    queries.grep(/FROM item/)
+  end
+
+  # A value with a quote broke a nested query, which ended the poller (or failed every poll with enable_retry).
+  def test_value_in_a_quoted_placeholder_is_escaped
+    assert_equal(["SELECT * FROM item WHERE owner = 'O\\'Brien'"], nested_queries_for("SELECT * FROM item WHERE owner = '${name}'"))
+  end
+
+  # A placeholder outside quotes is put in as it is, so that a column can hold a part of the SQL, as on master.
+  def test_value_in_an_unquoted_placeholder_is_put_in_as_it_is
+    assert_equal(["SELECT * FROM item WHERE owner = 'alice' AND parent_id = 1"], nested_queries_for('SELECT * FROM item WHERE ${cond} AND parent_id = ${id}'))
+  end
+
+  # A nested query with an error in its SQL ended the poller, or failed every poll at the same row with enable_retry.
+  # The row is held back for the poll: it is neither sent nor taken as deleted, and the other rows go on.
+  def test_nested_query_with_an_error_in_its_sql_holds_back_the_row
+    template = 'SELECT title FROM item WHERE ${cond}'
+    rows = ->(bad) { (1..3).map {|id| {'id' => id, 'cond' => id == bad ? "owner = 'O'Brien'" : "owner = 'u#{id}'", 'items' => template} } }
+    origin = lambda do |sql|
+      raise Mysql2::Error.new("You have an error in your SQL syntax; near 'Brien''", nil, 1064, '42000') if sql.include?("'O'Brien'")
+      [{'title' => 't'}]
+    end
+    first, second = run_polls(setting, rows.call(nil), rows.call(2), origin: origin)
+    assert_equal(['insert'] * 3, first.map {|tag, _| tag.split('.')[2] })
+    assert_equal([], second)
+    held_back = logs('error').grep(/held back/)
+    assert_equal(1, held_back.size)
+    assert_match(/mysql_replicator_multi: held back 1 rows in this poll, as the nested query of column 'items' failed with MySQL error 1064 \(SQLSTATE 42000\)\. :setting_name=>users$/, held_back.first)
+    assert_empty(@polled_instance.log.out.logs.grep(/Brien/))
   end
 
   # Starts the plugin with real threads, a fake manager database with the given settings, and fake source databases.

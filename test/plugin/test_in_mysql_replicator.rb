@@ -410,6 +410,145 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_match(/\[error\]: mysql_replicator: skipped 2 rows without the primary key\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :primary_key=>id$/, skipped.first)
   end
 
+  # --- values in nested queries ---
+
+  NESTED_NAME_CONFIG = %[
+    tag   input.mysql.${event}.${primary_key}
+    query SELECT id, name, cond, items FROM parent
+  ]
+
+  # Polls once with one parent row whose items column is the given nested query, and returns the nested queries sent.
+  def nested_queries_for(template, row = {})
+    parent = {'id' => 1, 'name' => "O'Brien", 'cond' => "owner = 'alice'", 'items' => template}.merge(row)
+    instance, _, clients = polling_instance(NESTED_NAME_CONFIG) {|sql| sql.include?('FROM parent') ? [parent] : [] }
+    poll_once(instance)
+    clients.flat_map(&:queries).grep(/FROM item/)
+  end
+
+  # A value with a quote broke a nested query, and query() retried the SQL error forever.
+  def test_value_in_a_quoted_placeholder_is_escaped
+    assert_equal(["SELECT * FROM item WHERE owner = 'O\\'Brien'"], nested_queries_for("SELECT * FROM item WHERE owner = '${name}'"))
+    assert_equal(["SELECT * FROM item WHERE owner = \"O\\'Brien\""], nested_queries_for('SELECT * FROM item WHERE owner = "${name}"'))
+    assert_equal(["SELECT * FROM item WHERE owner LIKE '%O\\'Brien%'"], nested_queries_for("SELECT * FROM item WHERE owner LIKE '%${name}%'"))
+  end
+
+  # A placeholder outside quotes is put in as it is, so that a column can hold a part of the SQL, as on master.
+  def test_value_in_an_unquoted_placeholder_is_put_in_as_it_is
+    assert_equal(["SELECT * FROM item WHERE owner = 'alice'"], nested_queries_for('SELECT * FROM item WHERE ${cond}'))
+    assert_equal(["SELECT * FROM item WHERE kind = 'it''s' AND owner = 'alice' AND parent_id = 1"],
+                 nested_queries_for("SELECT * FROM item WHERE kind = 'it''s' AND ${cond} AND parent_id = ${id}"))
+    assert_equal(["SELECT * FROM item WHERE note = 'a\\'b' AND owner = 'alice'"],
+                 nested_queries_for("SELECT * FROM item WHERE note = 'a\\'b' AND ${cond}"))
+  end
+
+  # A quote in a comment is not the start of a string, so the placeholders after it are not taken as quoted.
+  def test_quote_in_a_comment_does_not_start_a_string
+    assert_equal(["SELECT * FROM item /* the owner's items */ WHERE owner = 'alice'"],
+                 nested_queries_for("SELECT * FROM item /* the owner's items */ WHERE ${cond}"))
+    assert_equal(["SELECT * FROM item -- the owner's items\nWHERE owner = 'alice' AND name = 'O\\'Brien'"],
+                 nested_queries_for("SELECT * FROM item -- the owner's items\nWHERE ${cond} AND name = '${name}'"))
+    assert_equal(["SELECT * FROM item # the owner's items\nWHERE owner = 'alice'"],
+                 nested_queries_for("SELECT * FROM item # the owner's items\nWHERE ${cond}"))
+  end
+
+  # With NO_BACKSLASH_ESCAPES, a backslash in a string of the nested query is a character, and does not escape the
+  # quote after it.
+  def test_backslash_in_a_string_with_no_backslash_escapes
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')
+      query          SELECT id, cond, name, items FROM parent
+    ]
+    template = "SELECT * FROM item WHERE title <> 'x\\' AND ${cond} AND name = '${name}'"
+    instance, _, clients = polling_instance(conf) do |sql|
+      sql.include?('FROM parent') ? [{'id' => 1, 'cond' => "owner = 'alice'", 'name' => "O'Brien", 'items' => template}] : []
+    end
+    poll_once(instance)
+    assert_equal(["SELECT * FROM item WHERE title <> 'x\\' AND owner = 'alice' AND name = 'O''Brien'"],
+                 clients.flat_map(&:queries).grep(/FROM item/))
+  end
+
+  # The values are escaped on the connection that runs the nested query, which has the session of prepared_query
+  # (such as NO_BACKSLASH_ESCAPES in its sql_mode), and not on the connection of the main query.
+  def test_values_are_escaped_on_the_connection_of_the_nested_query
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_BACKSLASH_ESCAPES')
+      query          SELECT id, name, items FROM parent
+    ]
+    instance, _, clients = polling_instance(conf) do |sql|
+      sql.include?('FROM parent') ? [{'id' => 1, 'name' => "O'Brien", 'items' => "SELECT * FROM item WHERE owner = '${name}'"}] : []
+    end
+    poll_once(instance)
+    nested = clients.find {|c| c.queries.any? {|q| q.include?('FROM item') } }
+    assert_equal(["O'Brien"], nested.escaped)
+    assert_true(nested.queries.first.start_with?('SET SESSION sql_mode'))
+    assert_equal([], (clients - [nested]).flat_map(&:escaped))
+  end
+
+  # A nested query with an error in its SQL failed the same way on every try, and query() retried it forever, so the
+  # poll never ended. The row is held back for the poll, the other rows go on, and the error is logged once for the
+  # poll, without the values of the rows.
+  def test_nested_query_with_an_error_in_its_sql_holds_back_the_row
+    template = 'SELECT * FROM item WHERE ${cond}'
+    instance, events, _ = polling_instance(NESTED_NAME_CONFIG) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'cond' => "owner = 'O'Brien'", 'items' => template},
+                               {'id' => 2, 'cond' => "owner = 'bob'", 'items' => template},
+                               {'id' => 3, 'cond' => "owner = 'x'Brien'", 'items' => template}]
+      when /'O'Brien'|'x'Brien'/ then raise Mysql2::Error.new("You have an error in your SQL syntax; near 'Brien''", nil, 1064, '42000')
+      else [{'title' => 'b1'}]
+      end
+    end
+    poll_once(instance)
+    assert_equal([2], events.map {|_, record| record['id'] })
+    held_back = instance.log.out.logs.grep(/held back/)
+    assert_equal(1, held_back.size)
+    assert_match(/\[error\]: mysql_replicator: held back 2 rows in this poll, as the nested query of column 'items' failed with MySQL error 1064 \(SQLSTATE 42000\)\. :tag=>/, held_back.first)
+    assert_empty(instance.log.out.logs.grep(/Brien/))
+  end
+
+  # A row held back is not taken as deleted, and is sent once its nested query works.
+  def test_row_held_back_is_not_deleted_and_is_sent_once_its_nested_query_works
+    template = 'SELECT title FROM item WHERE parent_id = ${id}'
+    titles = {1 => [{'title' => 'a'}], 2 => [{'title' => 'b'}]}
+    instance, events, _ = polling_instance(NESTED_NAME_CONFIG) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => template}, {'id' => 2, 'items' => template}]
+      when /parent_id = (\d)/
+        raise Mysql2::Error.new("Unknown column 'parent_id' in 'where clause'", nil, 1054, '42S22') if titles[$1.to_i].nil?
+        titles[$1.to_i]
+      end
+    end
+    polls = 3.times.map do |i|
+      titles[2] = nil if i == 1
+      titles[2] = [{'title' => 'c'}] if i == 2
+      events.clear
+      poll_once(instance)
+      events.map {|tag, record| [tag[/insert|update|delete/], record['id']] }
+    end
+    assert_equal([[['insert', 1], ['insert', 2]], [], [['update', 2]]], polls)
+  end
+
+  # A lost connection is retried, as before.
+  def test_nested_query_is_retried_after_a_connection_error
+    failures = 1
+    instance, events, _ = polling_instance(NESTED_CONFIG) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 7, 'items' => 'SELECT name FROM item WHERE parent_id = ${id}'}]
+      when /FROM item/
+        if failures > 0
+          failures -= 1
+          raise Mysql2::Error.new('Lost connection to MySQL server during query', nil, 2013, 'HY000')
+        end
+        [{'name' => 'a'}]
+      end
+    end
+    instance.define_singleton_method(:sleep) {|_seconds| }
+    poll_once(instance)
+    assert_equal([['input.mysql.insert.id', {'id' => 7, 'items' => [{'name' => 'a'}]}]], events)
+  end
+
   PREPARED_CONFIG = %[
     tag            input.mysql.${event}.${primary_key}
     prepared_query CALL p_prepare()

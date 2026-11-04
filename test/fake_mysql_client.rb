@@ -27,6 +27,18 @@ class FakeMysqlClient
     @unread = FakeResult.new(rows) { @unread = nil }
   end
 
+  # The escape of a real client, which only doubles the quotes once the session has NO_BACKSLASH_ESCAPES. The values
+  # escaped by this client are recorded.
+  def escape(value)
+    raise Mysql2::Error, 'MySQL client is not connected' if @closed
+    escaped << value
+    @queries.any? {|q| q.include?('NO_BACKSLASH_ESCAPES') } ? value.gsub("'", "''") : Mysql2::Client.escape(value)
+  end
+
+  def escaped
+    @escaped ||= []
+  end
+
   def ping
     !@closed && @unread.nil?
   end
