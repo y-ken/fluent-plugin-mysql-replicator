@@ -1,6 +1,6 @@
 require 'net/http'
 require 'date'
-require 'yajl'
+require 'json'
 require 'fluent/plugin/output'
 
 class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Output
@@ -87,6 +87,9 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     install_template_once if @template_name
 
     bulk_message = []
+    utf8 = Utf8Converter.new
+    # The number of rows skipped for a primary key that is not valid UTF-8, by index.
+    skipped = Hash.new(0)
 
     chunk.msgpack_each do |tag, time, record|
       tag_parts = tag.match(@tag_format)
@@ -95,21 +98,41 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       id_keys = tag_parts['primary_key'].to_s.split(',')
 
       if tag_parts['event'] == 'delete'
-        action = {"_index" => target_index, "_id" => join_id(record, id_keys)}
+        id = join_id(record, id_keys, utf8)
+        if id.nil?
+          skipped[target_index] += 1
+          next
+        end
+        action = {"_index" => target_index, "_id" => id}
         action['_type'] = target_type unless @suppress_type
-        meta = { "delete" => action }
-        bulk_message << Yajl::Encoder.encode(meta)
+        meta = { "delete" => utf8.convert(action) }
+        bulk_message << JSON.generate(meta)
       else
         action = {"_index" => target_index}
         action['_type'] = target_type unless @suppress_type
         if !id_keys.empty? && id_keys.all? {|k| !record[k].nil? }
-          action['_id'] = join_id(record, id_keys)
+          id = join_id(record, id_keys, utf8)
+          if id.nil?
+            skipped[target_index] += 1
+            next
+          end
+          action['_id'] = id
         end
-        meta = { "index" => action }
-        bulk_message << Yajl::Encoder.encode(meta)
-        bulk_message << Yajl::Encoder.encode(record)
+        meta = { "index" => utf8.convert(action) }
+        bulk_message << JSON.generate(meta)
+        # A value from json_columns can be nested deeper than the default limit of JSON.generate (100), as MySQL allows.
+        bulk_message << JSON.generate(utf8.convert(record), max_nesting: false)
       end
     end
+    if utf8.replaced > 0
+      log.warn "mysql_replicator_elasticsearch: replaced the bytes that are not valid UTF-8 with U+FFFD in #{utf8.replaced} values"
+    end
+    unless skipped.empty?
+      # Without the keys or the records, which can hold values of the rows.
+      log.warn "mysql_replicator_elasticsearch: skipped #{skipped.values.sum} rows whose primary key is not valid UTF-8, as replacing its bytes would give different rows the same _id. :index=>#{skipped.keys.join(',')}"
+    end
+    # Elasticsearch answers a bulk request without actions with 400.
+    return if bulk_message.empty?
     bulk_message << ""
 
     request = Net::HTTP::Post.new('/_bulk', {'content-type' => 'application/json; charset=utf-8'})
@@ -129,10 +152,81 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     http
   end
 
+  # Converts the strings of a record to UTF-8 before JSON.generate. mysql2 gives BLOB and BINARY columns as ASCII-8BIT
+  # strings. yajl, which this plugin used before, wrote their bytes as they were. The json gem raises for them, or,
+  # from 2.10 to 2.x, writes them with a warning for each value when their bytes are valid UTF-8. So a binary string
+  # is read as UTF-8 here, and the bytes that are not valid UTF-8 are replaced with U+FFFD, and counted.
+  class Utf8Converter
+    attr_reader :replaced
+
+    def initialize
+      @replaced = 0
+    end
+
+    def convert(value)
+      case value
+      when Hash
+        value.each_with_object({}) {|(k, v), h| h[convert(k)] = convert(v) }
+      when Array
+        value.map {|v| convert(v) }
+      when String
+        convert_string(value)
+      else
+        value
+      end
+    end
+
+    # The string in UTF-8 with the same characters, or nil when its bytes are not valid UTF-8 (or it cannot be converted),
+    # without replacing anything.
+    def exact(value)
+      if value.encoding == Encoding::UTF_8 || value.encoding == Encoding::BINARY || value.encoding == Encoding::US_ASCII
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        utf8.valid_encoding? ? utf8 : nil
+      else
+        value.encode(Encoding::UTF_8)
+      end
+    rescue EncodingError
+      nil
+    end
+
+    private
+
+    def convert_string(value)
+      return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+      if value.encoding == Encoding::UTF_8 || value.encoding == Encoding::BINARY || value.encoding == Encoding::US_ASCII
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        return utf8 if utf8.valid_encoding?
+        @replaced += 1
+        return utf8.scrub
+      end
+      # Another character set, such as latin1, is converted as the json gem does.
+      value.encode(Encoding::UTF_8)
+    rescue EncodingError
+      @replaced += 1
+      value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
+    end
+  end
+
   # Build the document _id from one or more primary-key columns. A single key
   # yields its value; a composite key yields the values joined by ",".
-  def join_id(record, id_keys)
-    id_keys.map {|k| record[k] }.join(',')
+  #
+  # Returns nil when the _id is not valid UTF-8, as for a BINARY(16) key from UUID_TO_BIN(UUID()). Replacing its bytes
+  # with U+FFFD, as for the other values, would give different keys the same _id ("\x80" and "\x81" both become
+  # "\uFFFD"), so that a row would overwrite or delete the document of another one. With yajl, which this plugin used
+  # before, Elasticsearch rejected the whole bulk request for most such bytes (400), so the chunk was retried and its
+  # other rows were not written either.
+  def join_id(record, id_keys, utf8)
+    values = id_keys.map do |k|
+      value = record[k]
+      next value unless value.is_a?(String)
+      value = utf8.exact(value)
+      return nil if value.nil?
+      value
+    end
+    # A key that is not a string, such as an array, is checked once joined.
+    utf8.exact(values.join(','))
+  rescue Encoding::CompatibilityError
+    nil
   end
 
   # Expand strftime tokens (e.g. "%Y%m%d") in the index name using the record's
@@ -164,7 +258,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     request = Net::HTTP::Get.new('/')
     request.basic_auth(@username, @password) if @username && @password
     response = new_http.request(request)
-    number = Yajl::Parser.parse(response.body).dig('version', 'number')
+    number = JSON.parse(response.body).dig('version', 'number')
     return nil if number.nil?
     number.to_s.split('.').first(2).map(&:to_i)
   rescue => e

@@ -7,12 +7,19 @@ on:
 
 jobs:
   unit:
-    name: Unit tests (Ruby ${{ matrix.ruby }})
+    name: Unit tests (Ruby ${{ matrix.ruby }}${{ matrix.json && format(', json {0}', matrix.json) || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         ruby: ['3.2', '3.3', '3.4', '4.0']
+        json: ['']
+        include:
+          # json 2.10 to 2.x writes a binary string with a warning, where json 3 raises.
+          - ruby: '3.4'
+            json: '~> 2.21.0'
+    env:
+      JSON_VERSION: ${{ matrix.json }}
     steps:
       - uses: actions/checkout@v5
       - name: Install MySQL client headers
