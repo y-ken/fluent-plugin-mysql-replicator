@@ -210,10 +210,11 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   # Build the document _id from one or more primary-key columns. A single key
   # yields its value; a composite key yields the values joined by ",".
   #
-  # Returns nil when a key is a string whose bytes are not valid UTF-8, such as a BINARY(16) key from
-  # UUID_TO_BIN(UUID()). Replacing those bytes with U+FFFD, as for the other values, would give different keys the same
-  # _id ("\x80" and "\x81" both become "\uFFFD"), so that a row would overwrite or delete the document of another one.
-  # With yajl, which this plugin used before, Elasticsearch rejected such a document.
+  # Returns nil when the _id is not valid UTF-8, as for a BINARY(16) key from UUID_TO_BIN(UUID()). Replacing its bytes
+  # with U+FFFD, as for the other values, would give different keys the same _id ("\x80" and "\x81" both become
+  # "\uFFFD"), so that a row would overwrite or delete the document of another one. With yajl, which this plugin used
+  # before, Elasticsearch rejected the whole bulk request for most such bytes (400), so the chunk was retried and its
+  # other rows were not written either.
   def join_id(record, id_keys, utf8)
     values = id_keys.map do |k|
       value = record[k]
@@ -222,7 +223,10 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       return nil if value.nil?
       value
     end
-    values.join(',')
+    # A key that is not a string, such as an array, is checked once joined.
+    utf8.exact(values.join(','))
+  rescue Encoding::CompatibilityError
+    nil
   end
 
   # Expand strftime tokens (e.g. "%Y%m%d") in the index name using the record's

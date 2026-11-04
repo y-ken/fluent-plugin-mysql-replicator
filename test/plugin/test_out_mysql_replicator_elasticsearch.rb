@@ -185,6 +185,29 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal(["1,k\u00e9y"], index_cmds.map {|cmd| cmd['index'] }.compact.map {|action| action['_id'] })
   end
 
+  # A key that is an array, as a value of json_columns can be, is checked as well.
+  def test_skips_rows_whose_array_primary_key_is_not_utf8
+    stub_elastic
+    driver.run(default_tag: @tag) do
+      driver.feed({'id' => ["\x80".b], 'name' => 'a'})
+      driver.feed({'id' => ["\x81".b], 'name' => 'b'})
+      driver.feed({'id' => ["\uFFFD"], 'name' => 'c'})
+    end
+    assert_equal(["\uFFFD"], index_cmds.map {|cmd| cmd['index'] }.compact.map {|action| action['_id'] })
+    assert_equal(1, driver.logs.grep(/skipped 2 rows/).size)
+  end
+
+  # A composite key with a UTF-8 part and a binary part that are both not ASCII. Joining them raised
+  # Encoding::CompatibilityError, and Fluentd threw the chunk away.
+  def test_composite_primary_key_with_utf8_and_binary_parts
+    stub_elastic
+    driver.run(default_tag: 'myindex.mytype.insert.a,b') do
+      driver.feed({'a' => "caf\u00e9", 'b' => "\xC3\xA9".b})
+      driver.feed({'a' => 'plain', 'b' => 'x'})
+    end
+    assert_equal(["caf\u00e9,\u00e9", 'plain,x'], index_cmds.map {|cmd| cmd['index'] }.compact.map {|action| action['_id'] })
+  end
+
   # A key that is valid UTF-8 keeps its _id: a binary string, a number and a composite key.
   def test_primary_key_that_is_utf8_keeps_its_id
     stub_elastic
