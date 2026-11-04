@@ -49,7 +49,7 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     stub_elastic_version(url.sub('/_bulk', '/'))
     stub_request(:post, url).with do |req|
       @content_type = req.headers["Content-Type"]
-      @index_cmds = req.body.split("\n").map {|r| JSON.parse(r) }
+      @index_cmds = req.body.split("\n").map {|r| JSON.parse(r, max_nesting: false) }
     end
   end
 
@@ -152,6 +152,73 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     end
     assert_equal("k\u00e9y", index_cmds[0]['delete']['_id'])
     assert_empty(warnings)
+  end
+
+  # A primary key whose bytes are not valid UTF-8 would become U+FFFD, the same _id for "\x80", "\x81" and the valid
+  # "\xEF\xBF\xBD". Such a row is skipped, for an index and for a delete, with one warning for the chunk that gives
+  # the number of rows and the indices, and the other rows of the chunk are sent.
+  data(index: 'insert', delete: 'delete')
+  def test_skips_rows_whose_primary_key_is_not_utf8(event)
+    stub_elastic
+    driver.run(default_tag: "myindex.mytype.#{event}.id") do
+      driver.feed({'id' => "\x80".b, 'name' => 'a'})
+      driver.feed({'id' => "\x81".b, 'name' => 'b'})
+      driver.feed({'id' => "\xEF\xBF\xBD".b, 'name' => 'c'})
+      driver.feed({'id' => 4, 'name' => 'd'})
+    end
+    actions = index_cmds.map {|cmd| cmd[event == 'delete' ? 'delete' : 'index'] }.compact
+    assert_equal(["\uFFFD", '4'], actions.map {|action| action['_id'] })
+    assert_equal(%w[c d], index_cmds.map {|cmd| cmd['name'] }.compact) unless event == 'delete'
+    skipped = driver.logs.grep(/skipped/)
+    assert_equal(1, skipped.size)
+    assert_match(/\[warn\]: mysql_replicator_elasticsearch: skipped 2 rows whose primary key is not valid UTF-8, as replacing its bytes would give different rows the same _id\. :index=>myindex$/, skipped.first)
+    assert_empty(driver.logs.grep(/U\+FFFD/))
+  end
+
+  # The key of a composite primary key too.
+  def test_skips_rows_whose_composite_primary_key_is_not_utf8
+    stub_elastic
+    driver.run(default_tag: 'myindex.mytype.insert.tenant_id,id') do
+      driver.feed({'tenant_id' => 1, 'id' => "\x80".b})
+      driver.feed({'tenant_id' => 1, 'id' => "k\u00e9y".b})
+    end
+    assert_equal(["1,k\u00e9y"], index_cmds.map {|cmd| cmd['index'] }.compact.map {|action| action['_id'] })
+  end
+
+  # A key that is valid UTF-8 keeps its _id: a binary string, a number and a composite key.
+  def test_primary_key_that_is_utf8_keeps_its_id
+    stub_elastic
+    driver.run(default_tag: 'myindex.mytype.insert.tenant_id,id') do
+      driver.feed({'tenant_id' => "t\u00e9".b, 'id' => 7})
+      driver.feed({'tenant_id' => 10, 'id' => "\u{1F600}"})
+    end
+    assert_equal(["t\u00e9,7", "10,\u{1F600}"], index_cmds.map {|cmd| cmd['index'] }.compact.map {|action| action['_id'] })
+    assert_empty(driver.logs.grep(/skipped/))
+  end
+
+  # A chunk with only such rows sends nothing, and does not raise (Elasticsearch answers an empty bulk request with 400).
+  def test_chunk_with_only_rows_whose_primary_key_is_not_utf8
+    stub_elastic
+    assert_nothing_raised do
+      driver.run(default_tag: 'myindex.mytype.delete.id') do
+        driver.feed({'id' => "\x80".b})
+      end
+    end
+    assert_nil(index_cmds)
+    assert_not_requested(:post, 'http://localhost:9200/_bulk')
+    assert_equal(1, driver.logs.grep(/skipped 1 rows/).size)
+  end
+
+  # A value from json_columns can be nested deeper than the default limit of JSON.generate, which raised for the whole
+  # chunk, so the other records of it were not sent either.
+  def test_writes_a_deeply_nested_value
+    stub_elastic
+    deep = JSON.parse('[' * 100 + '1' + ']' * 100)
+    driver.run(default_tag: @tag) do
+      driver.feed({'id' => 1, 'doc' => deep})
+      driver.feed({'id' => 2, 'name' => 'plain'})
+    end
+    assert_equal([{'id' => 1, 'doc' => deep}, {'id' => 2, 'name' => 'plain'}], [index_cmds[1], index_cmds[3]])
   end
 
   def test_writes_to_speficied_type

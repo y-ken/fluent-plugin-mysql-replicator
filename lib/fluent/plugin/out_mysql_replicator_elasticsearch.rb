@@ -88,6 +88,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
     bulk_message = []
     utf8 = Utf8Converter.new
+    # The number of rows skipped for a primary key that is not valid UTF-8, by index.
+    skipped = Hash.new(0)
 
     chunk.msgpack_each do |tag, time, record|
       tag_parts = tag.match(@tag_format)
@@ -96,7 +98,12 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       id_keys = tag_parts['primary_key'].to_s.split(',')
 
       if tag_parts['event'] == 'delete'
-        action = {"_index" => target_index, "_id" => join_id(record, id_keys)}
+        id = join_id(record, id_keys, utf8)
+        if id.nil?
+          skipped[target_index] += 1
+          next
+        end
+        action = {"_index" => target_index, "_id" => id}
         action['_type'] = target_type unless @suppress_type
         meta = { "delete" => utf8.convert(action) }
         bulk_message << JSON.generate(meta)
@@ -104,17 +111,29 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
         action = {"_index" => target_index}
         action['_type'] = target_type unless @suppress_type
         if !id_keys.empty? && id_keys.all? {|k| !record[k].nil? }
-          action['_id'] = join_id(record, id_keys)
+          id = join_id(record, id_keys, utf8)
+          if id.nil?
+            skipped[target_index] += 1
+            next
+          end
+          action['_id'] = id
         end
         meta = { "index" => utf8.convert(action) }
         bulk_message << JSON.generate(meta)
-        bulk_message << JSON.generate(utf8.convert(record))
+        # A value from json_columns can be nested deeper than the default limit of JSON.generate (100), as MySQL allows.
+        bulk_message << JSON.generate(utf8.convert(record), max_nesting: false)
       end
     end
-    bulk_message << ""
     if utf8.replaced > 0
       log.warn "mysql_replicator_elasticsearch: replaced the bytes that are not valid UTF-8 with U+FFFD in #{utf8.replaced} values"
     end
+    unless skipped.empty?
+      # Without the keys or the records, which can hold values of the rows.
+      log.warn "mysql_replicator_elasticsearch: skipped #{skipped.values.sum} rows whose primary key is not valid UTF-8, as replacing its bytes would give different rows the same _id. :index=>#{skipped.keys.join(',')}"
+    end
+    # Elasticsearch answers a bulk request without actions with 400.
+    return if bulk_message.empty?
+    bulk_message << ""
 
     request = Net::HTTP::Post.new('/_bulk', {'content-type' => 'application/json; charset=utf-8'})
     if @username && @password
@@ -157,6 +176,19 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       end
     end
 
+    # The string in UTF-8 with the same characters, or nil when its bytes are not valid UTF-8 (or it cannot be converted),
+    # without replacing anything.
+    def exact(value)
+      if value.encoding == Encoding::UTF_8 || value.encoding == Encoding::BINARY || value.encoding == Encoding::US_ASCII
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        utf8.valid_encoding? ? utf8 : nil
+      else
+        value.encode(Encoding::UTF_8)
+      end
+    rescue EncodingError
+      nil
+    end
+
     private
 
     def convert_string(value)
@@ -177,8 +209,20 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
   # Build the document _id from one or more primary-key columns. A single key
   # yields its value; a composite key yields the values joined by ",".
-  def join_id(record, id_keys)
-    id_keys.map {|k| record[k] }.join(',')
+  #
+  # Returns nil when a key is a string whose bytes are not valid UTF-8, such as a BINARY(16) key from
+  # UUID_TO_BIN(UUID()). Replacing those bytes with U+FFFD, as for the other values, would give different keys the same
+  # _id ("\x80" and "\x81" both become "\uFFFD"), so that a row would overwrite or delete the document of another one.
+  # With yajl, which this plugin used before, Elasticsearch rejected such a document.
+  def join_id(record, id_keys, utf8)
+    values = id_keys.map do |k|
+      value = record[k]
+      next value unless value.is_a?(String)
+      value = utf8.exact(value)
+      return nil if value.nil?
+      value
+    end
+    values.join(',')
   end
 
   # Expand strftime tokens (e.g. "%Y%m%d") in the index name using the record's
