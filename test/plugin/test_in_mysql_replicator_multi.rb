@@ -91,8 +91,9 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   end
 
   # The connection of prepared_query lost in the middle of a poll, which does not connect again: the rest of the poll is
-  # skipped with one line, whether enable_retry is set or not, and the next poll compares its first row with the last row
-  # of the poll before the skipped one, not with the last row seen, which would make the rows after it look deleted.
+  # skipped with one line, whether enable_retry is set or not. The next poll does not compare its first row with the
+  # last row seen, which would make the rows after it look deleted, nor again with the poll before, which the first row
+  # of the skipped poll did.
   def test_lost_connection_of_prepared_query_skips_the_rest_of_the_poll
     instance = create_driver.instance
     config = {
@@ -131,7 +132,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     @polled_instance = instance
     Timeout.timeout(10) { instance.poll(config) }
     assert_equal([[1, 2, 3], [1], [1, 2, 3]], polls)
-    assert_equal([[1, nil], [2, 1], [3, 2], [1, 3], [1, 3], [2, 1], [3, 2]], compared)
+    assert_equal([[1, nil], [2, 1], [3, 2], [1, 3], [1, nil], [2, 1], [3, 2]], compared)
     logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
     assert_equal(1, logs.size, logs.inspect)
     assert_match(/\[error\]: mysql_replicator_multi: lost the connection of prepared_query; skipped the rest of this poll\. :setting_name=>users :errno=>2013 :sql_state=>HY000$/, logs.first)

@@ -144,9 +144,12 @@ module Fluent::Plugin
               rows_count += 1
             end
           rescue PreparedSessionLost => e
-            # The rest of the poll is skipped, as when prepared_query fails, and the next poll compares with the last row
-            # of the poll before: the last row seen here would make the rows after it look deleted.
-            previous_id = previous_id_at_start
+            # The rest of the poll is skipped, as when prepared_query fails. The next poll does not compare its first row
+            # with the last row seen here, which would make the rows after it look deleted. If this poll had rows, its
+            # first row already did that comparison with the poll before, and the rows that it added to hash_tables would
+            # look deleted if it were done again, so the next poll does not compare its first row at all; rows deleted
+            # at the end are found at the end of the next poll.
+            previous_id = rows_count.zero? ? previous_id_at_start : nil
             db.close if db
             nest_db.close
             @mutex.synchronize {
@@ -342,10 +345,11 @@ module Fluent::Plugin
       end
     end
 
-    # Runs a nested query on nest_db. With prepared_query, nest_db does not connect again, so a lost connection raises
-    # PreparedSessionLost; connecting again would run the rest of the poll without the session.
+    # Runs a nested query on nest_db and reads its rows. With prepared_query, nest_db does not connect again, so a lost
+    # connection, also while the rows are read, raises PreparedSessionLost; connecting again would run the rest of the
+    # poll without the session.
     def nest_query(nest_db, config, query)
-      nest_db.query(query)
+      nest_db.query(query).to_a
     rescue Mysql2::Error => e
       raise if config['prepared_query'].to_s.strip.empty? || nest_db.ping
       raise PreparedSessionLost.new(e)
