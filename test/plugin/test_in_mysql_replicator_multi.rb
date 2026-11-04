@@ -89,4 +89,65 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_equal([false, false, false, true], connections.map {|_, reconnect| reconnect })
     assert_true(connections.all? {|client, _| client.closed? })
   end
+
+  # The connection of prepared_query lost in the middle of a poll, which does not connect again: the rest of the poll is
+  # skipped with one line, whether enable_retry is set or not, and the next poll compares its first row with the last row
+  # of the poll before the skipped one, not with the last row seen, which would make the rows after it look deleted.
+  def test_lost_connection_of_prepared_query_skips_the_rest_of_the_poll
+    instance = create_driver.instance
+    config = {
+      'name' => 'users', 'query' => 'SELECT id, items FROM users', 'prepared_query' => 'SET @a = 1',
+      'primary_key' => 'id', 'interval' => 60, 'retry_interval' => 30, 'json_columns' => nil,
+      'enable_delete' => 1, 'enable_loose_insert' => 1, 'enable_loose_delete' => 0, 'enable_retry' => 0,
+    }
+    instance.instance_variable_set(:@mutex, Mutex.new)
+    instance.instance_variable_set(:@running, true)
+    polls = [[]]
+    compared = []
+    clients = []
+    instance.define_singleton_method(:emit_record) {|tag, record| polls.last << record['id'] }
+    instance.define_singleton_method(:update_hashtable) {|_opts| }
+    instance.define_singleton_method(:detect_delete) {|_config, current_id, previous_id| compared << [current_id, previous_id] }
+    instance.define_singleton_method(:get_origin_connection) do |_config, _reconnect = true|
+      poll = polls.size
+      client = FakeMysqlClient.new do |sql|
+        case sql
+        when /FROM users/ then (1..3).map {|id| {'id' => id, 'items' => 'SELECT name FROM item WHERE id = ${id}'} }
+        when /WHERE id = 2/
+          if poll == 2
+            clients.find {|c| c.queries.last == sql }.close
+            raise Mysql2::Error.new('Lost connection to server during query', nil, 2013, 'HY000')
+          end
+          [{'name' => 'n'}]
+        when /FROM item/ then [{'name' => 'n'}]
+        end
+      end
+      clients << client
+      client
+    end
+    instance.define_singleton_method(:sleep) do |seconds|
+      polls.size >= 3 ? @running = false : polls << []
+    end
+    @polled_instance = instance
+    Timeout.timeout(10) { instance.poll(config) }
+    assert_equal([[1, 2, 3], [1], [1, 2, 3]], polls)
+    assert_equal([[1, nil], [2, 1], [3, 2], [1, 3], [1, 3], [2, 1], [3, 2]], compared)
+    logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
+    assert_equal(1, logs.size, logs.inspect)
+    assert_match(/\[error\]: mysql_replicator_multi: lost the connection of prepared_query; skipped the rest of this poll\. :setting_name=>users :errno=>2013 :sql_state=>HY000$/, logs.first)
+  end
+
+  # The connection of prepared_query is opened with reconnect off.
+  def test_get_origin_connection_passes_reconnect
+    instance = create_driver.instance
+    options = []
+    Mysql2::Client.define_singleton_method(:new) {|opts| options << opts; :client }
+    begin
+      instance.get_origin_connection({'host' => 'h'}, false)
+      instance.get_origin_connection({'host' => 'h'})
+    ensure
+      Mysql2::Client.singleton_class.send(:remove_method, :new)
+    end
+    assert_equal([false, true], options.map {|opts| opts[:reconnect] })
+  end
 end

@@ -87,7 +87,8 @@ module Fluent::Plugin
       start_time = Time.now
       previous_ids = @ids
       current_ids = Array.new
-      baseline = @table_hash.dup
+      # Kept for a poll that prepared_query fails.
+      baseline = @table_hash.dup unless @prepared_query.nil?
       # The nested queries run on this connection, so that they see the session that prepared_query sets up. It is a
       # new session for each poll, as a session cannot create the same temporary table twice.
       open_nested = @prepared_query.nil? ? method(:get_connection) : method(:open_prepared_connection)
@@ -245,8 +246,11 @@ module Fluent::Plugin
     # Runs a query, and returns its result and the connection it ran on. A connection that is lost is closed and opened
     # again, with the block if one is given (for the session of prepared_query), and the query is tried again after a
     # failure. A PreparedQueryError of the block is not tried again here: it skips the poll, which waits for the interval.
+    # A query that failed as its connection was lost is tried again at once on a new connection, the first time, so that
+    # a failure of prepared_query on that connection waits for the interval only once; after that, it waits.
     def query(query, con = nil, &open)
       open ||= method(:get_connection)
+      reopened = false
       begin
         if con.nil? || !con.ping
           con.close if con
@@ -256,6 +260,10 @@ module Fluent::Plugin
       rescue PreparedQueryError
         raise
       rescue Exception => e
+        if !reopened && con && !con.ping
+          reopened = true
+          retry
+        end
         log.warn "mysql_replicator: #{e}"
         sleep @interval
         retry

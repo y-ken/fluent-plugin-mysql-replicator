@@ -474,4 +474,60 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal([['input.mysql.update.id', 1], ['input.mysql.update.id', 2]], events.map {|tag, record| [tag, record['id']] })
     assert_true(clients.all?(&:closed?))
   end
+
+  # A nested query that fails as the connection of prepared_query was lost opens it again at once, and prepared_query
+  # failing there skips the poll with one line, without waiting for the interval in query() too (it would time out).
+  def test_prepared_query_failing_after_a_lost_connection_waits_once
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    lost = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /\ACREATE/ then raise prepared_error if lost
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /parent_id = 2/
+        lost = true
+        clients.find {|c| c.queries.last == sql }.close
+        raise Mysql2::Error.new('Lost connection to server during query', nil, 2013, 'HY000')
+      else [{'name' => 'n'}]
+      end
+    end
+    poll_once(instance)
+    assert_equal([1], events.map {|_, record| record['id'] })
+    logs = instance.log.out.logs.grep(/\[(warn|error)\]/)
+    assert_equal(1, logs.size, logs.inspect)
+    assert_match(/prepared_query failed; skipped this poll\. .* :errno=>1062 :sql_state=>23000$/, logs.first)
+    assert_true(clients.all?(&:closed?))
+  end
+
+  # Replaces Mysql2::Client.new with the block while the test runs.
+  def with_client_new(impl)
+    Mysql2::Client.define_singleton_method(:new, &impl)
+    yield
+  ensure
+    Mysql2::Client.singleton_class.send(:remove_method, :new)
+  end
+
+  # The connection of prepared_query is not connected again by the client, which would lose the session, and a failure
+  # to connect is raised at once instead of logged and tried again after the interval. Other connections keep both.
+  def test_connection_of_prepared_query_does_not_reconnect_and_does_not_wait
+    instance = create_driver(PREPARED_CONFIG).instance
+    slept = []
+    instance.define_singleton_method(:sleep) {|seconds| slept << seconds }
+    options = []
+    with_client_new(lambda {|opts| options << opts; :client }) do
+      assert_equal(:client, instance.get_connection(true))
+      assert_equal(:client, instance.get_connection)
+    end
+    assert_equal([false, true], options.map {|opts| opts[:reconnect] })
+    error = Mysql2::Error.new("Access denied for user 'secret'", nil, 1045, '28000')
+    with_client_new(lambda {|_opts| raise error }) do
+      assert_raise(Mysql2::Error) { instance.get_connection(true) }
+    end
+    assert_equal([], slept)
+  end
 end
