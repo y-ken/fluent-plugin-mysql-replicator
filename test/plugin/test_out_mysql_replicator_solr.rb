@@ -17,7 +17,7 @@ class MysqlReplicatorSolrOutput < Test::Unit::TestCase
   CONFIG = %[
     host       localhost
     port       8983
-    tag_format (?<core_name>[^\.]+)\.(?<event>[^\.]+)\.(?<primary_key>[^\.]+)$
+    tag_format (?<core_name>[^.]+)\\.(?<event>[^.]+)\\.(?<primary_key>[^.]+)$
   ]
 
   def create_driver(conf=CONFIG)
@@ -55,6 +55,23 @@ class MysqlReplicatorSolrOutput < Test::Unit::TestCase
       d.feed({'id' => 7})
     end
     assert_equal([{'delete' => 7}, {'commit' => {}}], @updates['mycore'].map {|body| JSON.parse(body) })
+  end
+
+  # A record whose tag does not match tag_format makes the chunk unrecoverable, so that Fluentd moves it to the backup
+  # directory at once, instead of retrying it. Nothing of the chunk is sent, and the error names the tag, not the
+  # contents of the records. (The test buffer throws the chunk away instead of writing a backup file.)
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable
+    stub_solr
+    d = create_driver(CONFIG + "<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    d.run(default_tag: 'mycore.insert.id') do
+      d.feed('mycore.insert.id', Fluent::EventTime.now, {'id' => 2})
+      d.feed('nomatch', Fluent::EventTime.now, {'id' => 1, 'secret' => 'xyzzy'})
+    end
+    assert_equal({}, @updates)
+    error = d.logs.grep(/got unrecoverable error/)
+    assert_equal(1, error.size)
+    assert_match(/error_class=Fluent::UnrecoverableError error="mysql_replicator_solr: 1 records .* tag_format .*: nomatch \(1\)"/, error.first)
+    assert_empty(d.logs.grep(/xyzzy/))
   end
 
   def test_escapes_the_core_name

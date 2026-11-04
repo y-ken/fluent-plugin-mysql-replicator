@@ -259,6 +259,52 @@ exact fixed-point precision — `scaled_float` (as `price` above). Elasticsearch
 `coerce` (enabled by default for numeric types) converts the numeric string to a
 number at index time, so no value conversion is needed in the plugin.
 
+## A tag that does not match `tag_format`
+
+The outputs read the index (or the Solr core), the event and the primary key from
+the tag with `tag_format`. A record whose tag does not match cannot be written, so
+the output raises `Fluent::UnrecoverableError` for its chunk, and Fluentd moves the
+whole chunk, with the other records in it, to the backup directory at once,
+without retrying it (or to `<secondary>`, if one is configured). Nothing of the
+chunk is written. The log names the tags and the number of records:
+
+```
+[warn]: [es_out] got unrecoverable error in primary and no secondary error_class=Fluent::UnrecoverableError error="mysql_replicator_elasticsearch: 3 records in the chunk have a tag that does not match tag_format /.../, so the chunk is not written: users.insert (3)"
+[warn]: [es_out] bad chunk is moved to /var/log/fluent/backup/worker0/es_out/65f69a4a987935044c1a751ef1c8ea8b.log
+```
+
+The backup directory is `backup/` under the `root_dir` of `<system>`, or under
+`/tmp/fluent` without it. Set `@id` on the `<match>`, so that the path stays the
+same. With `disable_chunk_backup true` in `<buffer>`, the chunk is thrown away
+instead.
+
+To put a backup file back in:
+
+1. Fix `tag_format`, or the `tag` of the input, so that the tags match.
+2. Add a `forward` source to the Fluentd that has the output, and restart it:
+
+   ```
+   <source>
+     @type forward
+     port 24224
+   </source>
+   ```
+
+3. Send the file to it. Each record in the file is `[tag, time, record]` in
+   MessagePack, which is a message of the forward protocol, so the file is sent
+   as it is:
+
+   ```
+   ruby -rsocket -e 'TCPSocket.open("localhost", 24224) {|s| IO.copy_stream(ARGV[0], s) }' /var/log/fluent/backup/worker0/es_out/65f69a4a987935044c1a751ef1c8ea8b.log
+   ```
+
+   Any Ruby works, for example the one of fluent-package (`/opt/fluent/bin/ruby`).
+   The records keep their tags and their times, to the second.
+   `fluent-binlog-reader` cannot read these files, as each record carries its tag.
+4. Move the file out of the backup directory once its records are written. A
+   file sent twice writes its documents twice, which leaves the same documents
+   for records that have a primary key.
+
 ## Output example
 
 An example of detecting insert/update/delete events.
