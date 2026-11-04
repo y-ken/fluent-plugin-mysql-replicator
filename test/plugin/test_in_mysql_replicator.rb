@@ -174,7 +174,7 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     instance = create_driver(conf).instance
     events = []
     clients = []
-    instance.define_singleton_method(:get_connection) { FakeMysqlClient.new(&responder).tap {|c| clients << c } }
+    instance.define_singleton_method(:get_connection) {|_session = false| FakeMysqlClient.new(&responder).tap {|c| clients << c } }
     instance.define_singleton_method(:emit_record) {|tag, record| events << [tag, record] }
     instance.instance_variable_set(:@table_hash, {})
     instance.instance_variable_set(:@ids, [])
@@ -267,8 +267,8 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
       end
     end
     open_client = instance.method(:get_connection)
-    instance.define_singleton_method(:get_connection) do
-      open_client.call.tap do |c|
+    instance.define_singleton_method(:get_connection) do |*args|
+      open_client.call(*args).tap do |c|
         # The rows of the procedure, then its status, after the result of CALL itself.
         c.define_singleton_method(:query) do |sql|
           raise Mysql2::Error, "Commands out of sync; you can't run this command now" unless more_results.empty?
@@ -364,5 +364,114 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     skipped = @polled_instance.log.out.logs.grep(/skipped/)
     assert_equal(2, skipped.size)
     assert_match(/\[error\]: mysql_replicator: skipped 2 rows without the primary key\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :primary_key=>id$/, skipped.first)
+  end
+
+  PREPARED_CONFIG = %[
+    tag            input.mysql.${event}.${primary_key}
+    prepared_query CALL p_prepare()
+    query          SELECT id, name FROM t
+  ]
+
+  # The message of a MySQL error can hold values of the rows.
+  def prepared_error
+    Mysql2::Error.new("Duplicate entry 'secret-value' for key 'PRIMARY'", nil, 1062, '23000')
+  end
+
+  # Runs one poll for each [rows, failure], and returns the events of each poll. failure is how prepared_query fails in
+  # that poll: nil (it does not), :statement (its statement fails), :after_rows (a CALL fails after the rows it returned)
+  # or :connect (its connection cannot be opened).
+  def prepared_polls(*polls)
+    table = failure = nil
+    instance, events, clients = polling_instance(PREPARED_CONFIG) do |sql|
+      if sql.start_with?('CALL')
+        raise prepared_error if failure == :statement
+        [{'ok' => 1}]
+      else
+        table
+      end
+    end
+    open_client = instance.method(:get_connection)
+    test = self
+    instance.define_singleton_method(:get_connection) do |session = false|
+      raise test.prepared_error if session && failure == :connect
+      open_client.call(session).tap do |c|
+        c.define_singleton_method(:next_result) do
+          raise test.prepared_error if failure == :after_rows && queries.last.start_with?('CALL')
+          super()
+        end
+      end
+    end
+    @polled_instance = instance
+    @polled_clients = clients
+    polls.map do |rows, fails|
+      table, failure = rows, fails
+      events.clear
+      poll_once(instance)
+      events.dup
+    end
+  end
+
+  # A poll whose prepared_query fails sends nothing, not even deletes, and keeps the ids and hashes of the previous poll,
+  # so the next poll sends what changed since then.
+  data(statement: :statement, after_rows: :after_rows, connect: :connect)
+  def test_poll_after_a_failed_prepared_query_sends_what_changed(failure)
+    before = [{'id' => 1, 'name' => 'a'}, {'id' => 2, 'name' => 'b'}]
+    after = [{'id' => 2, 'name' => 'b2'}, {'id' => 3, 'name' => 'c'}]
+    first, failed, recovered = prepared_polls([before, nil], [after, failure], [after, nil])
+    assert_equal(2, first.size)
+    assert_equal([], failed)
+    assert_equal([['input.mysql.update.id', {'id' => 2, 'name' => 'b2'}],
+                  ['input.mysql.insert.id', {'id' => 3, 'name' => 'c'}],
+                  ['input.mysql.delete.id', {'id' => 1}]], recovered)
+    assert_true(@polled_clients.all?(&:closed?))
+  end
+
+  # One line for each poll, with the error number and the SQLSTATE but not the message, and the poll does not wait: the
+  # interval (1m by default) would make it time out.
+  data(statement: :statement, after_rows: :after_rows, connect: :connect)
+  def test_failing_prepared_query_logs_one_line_for_each_poll(failure)
+    rows = [{'id' => 1, 'name' => 'a'}]
+    polls = prepared_polls([rows, nil], [rows, failure], [rows, failure], [rows, failure])
+    assert_equal([[], [], []], polls.drop(1))
+    logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
+    assert_equal(3, logs.size, logs.inspect)
+    logs.each do |line|
+      assert_match(/\[error\]: mysql_replicator: prepared_query failed; skipped this poll\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :errno=>1062 :sql_state=>23000$/, line)
+    end
+    assert_true(@polled_clients.all?(&:closed?))
+  end
+
+  # prepared_query that fails again on a connection opened again in the middle of a poll skips the rest of the poll. The
+  # rows sent before it are sent again by the next poll, which compares with the poll before the failed one.
+  def test_prepared_query_failing_in_the_middle_of_a_poll_keeps_the_previous_poll
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, name, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    table = nil
+    lose = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /\ACREATE/ then raise prepared_error if lose && clients.size > 4
+      when /FROM parent/ then table.map {|id, name| {'id' => id, 'name' => name, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'} }
+      when /\ASELECT name/
+        clients.find {|c| c.queries.last == sql }.close if lose
+        [{'name' => 'n'}]
+      end
+    end
+    table = [[1, 'a'], [2, 'b']]
+    poll_once(instance)
+    events.clear
+    table = [[1, 'a2'], [2, 'b2']]
+    lose = true
+    poll_once(instance)
+    assert_equal([1], events.map {|_, record| record['id'] })
+    assert_equal(1, instance.log.out.logs.grep(/prepared_query failed/).size)
+    events.clear
+    lose = false
+    poll_once(instance)
+    assert_equal([['input.mysql.update.id', 1], ['input.mysql.update.id', 2]], events.map {|tag, record| [tag, record['id']] })
+    assert_true(clients.all?(&:closed?))
   end
 end

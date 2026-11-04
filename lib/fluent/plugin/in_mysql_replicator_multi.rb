@@ -91,17 +91,20 @@ module Fluent::Plugin
           nest_db = nil
           begin
             unless config['prepared_query'].nil?
-              nest_db = get_origin_connection(config)
-              # The results of a statement, such as a SELECT that sets a user variable or a CALL of a procedure that
-              # returns rows, are read out: the connection streams its results, and one left unread makes the next
-              # query on it fail.
-              config['prepared_query'].split(/;/).map(&:strip).reject(&:empty?).each do |query|
-                result = nest_db.query(query)
-                result.each {} if result
-                while nest_db.next_result
-                  more = nest_db.store_result
-                  more.each {} if more
-                end
+              # The client does not connect again, which would lose the session of prepared_query without an error.
+              nest_db = get_origin_connection(config, config['prepared_query'].strip.empty?)
+              # A statement that fails, including a CALL that fails after its rows, skips the poll, which is tried
+              # again on a new connection after the interval. Only the error number and the SQLSTATE are logged: the
+              # message of MySQL can hold values of the rows.
+              begin
+                run_prepared_query(nest_db, config['prepared_query'])
+              rescue Mysql2::Error => e
+                nest_db.close
+                @mutex.synchronize {
+                  log.error "mysql_replicator_multi: prepared_query failed; skipped this poll. :setting_name=>#{config['name']} :errno=>#{e.error_number} :sql_state=>#{e.sql_state}"
+                }
+                sleep config['interval']
+                next
               end
             end
             db = get_origin_connection(config)
@@ -315,7 +318,20 @@ module Fluent::Plugin
       end
     end
 
-    def get_origin_connection(config)
+    # The results of a statement, such as a SELECT that sets a user variable or a CALL of a procedure that returns rows,
+    # are read out: the connection streams its results, and one left unread makes the next query on it fail.
+    def run_prepared_query(db, prepared_query)
+      prepared_query.split(/;/).map(&:strip).reject(&:empty?).each do |query|
+        result = db.query(query)
+        result.each {} if result
+        while db.next_result
+          more = db.store_result
+          more.each {} if more
+        end
+      end
+    end
+
+    def get_origin_connection(config, reconnect = true)
       begin
         return Mysql2::Client.new(
           :host => config['host'],
@@ -324,7 +340,7 @@ module Fluent::Plugin
           :password => config['password'],
           :database => config['database'],
           :encoding => 'utf8',
-          :reconnect => true,
+          :reconnect => reconnect,
           :stream => true,
           :cache_rows => false
         )
