@@ -2,6 +2,7 @@ require 'helper'
 require 'fluent/test/driver/output'
 require 'webmock/test_unit'
 require 'tempfile'
+require 'tmpdir'
 
 WebMock.disable_net_connect!
 
@@ -529,6 +530,24 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_requested(get_tmpl, :times => 1)
     assert_not_requested(put_tmpl)
     assert_equal(1, log_lines('error').size)
+  end
+
+  # A template_file that cannot be read, such as a directory, fails the same way on every write. The bulk requests
+  # are still sent.
+  def test_does_not_install_the_template_again_when_its_file_cannot_be_read
+    bulks = stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    Dir.mktmpdir do |dir|
+      driver.configure("template_name my_tmpl\ntemplate_file #{dir}\n")
+      three_writes
+    end
+    assert_requested(get_tmpl, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+    assert_equal(3, bulks.size)
   end
 
   # The composable template needs the version. When it cannot be detected for good, the template is given up too.

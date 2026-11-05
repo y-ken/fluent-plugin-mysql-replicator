@@ -334,7 +334,14 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
       log.info "mysql_replicator_elasticsearch: index template '#{@template_name}' already exists; skipping (set 'template_overwrite true' to replace)"
       return
     end
-    put_template(File.read(@template_file))
+    # A template_file that cannot be read, such as a directory, fails the same way on every write, so it is not
+    # tried again, as for a 400.
+    begin
+      body = File.read(@template_file)
+    rescue SystemCallError, IOError => e
+      raise "could not read template_file #{@template_file}: #{e.class}: #{e.message}"
+    end
+    put_template(body)
     log.info "mysql_replicator_elasticsearch: installed index template '#{@template_name}' (#{@use_legacy_template ? 'legacy' : 'composable'})"
   end
 
