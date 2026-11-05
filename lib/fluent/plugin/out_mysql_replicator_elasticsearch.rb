@@ -88,11 +88,16 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
     bulk_message = []
     utf8 = Utf8Converter.new
+    unmatched_tags = Hash.new(0)
     # The number of rows skipped for a primary key that is not valid UTF-8, by index.
     skipped = Hash.new(0)
 
     chunk.msgpack_each do |tag, time, record|
       tag_parts = tag.match(@tag_format)
+      unless tag_parts
+        unmatched_tags[tag] += 1
+        next
+      end
       target_index = resolve_index_name(tag_parts['index_name'], time)
       target_type = tag_parts['type_name']
       id_keys = tag_parts['primary_key'].to_s.split(',')
@@ -124,6 +129,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
         bulk_message << JSON.generate(utf8.convert(record), max_nesting: false)
       end
     end
+    raise_unmatched_tags(unmatched_tags) unless unmatched_tags.empty?
     if utf8.replaced > 0
       log.warn "mysql_replicator_elasticsearch: replaced the bytes that are not valid UTF-8 with U+FFFD in #{utf8.replaced} values"
     end
@@ -145,6 +151,15 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   private
+
+  # A record whose tag does not match tag_format cannot be written. The whole chunk, with its other records, is not
+  # sent, and Fluent::UnrecoverableError makes Fluentd move it to the backup directory (or to <secondary>) at once,
+  # instead of retrying it. The message gives the tags and the number of records, not their contents.
+  def raise_unmatched_tags(unmatched_tags)
+    count = unmatched_tags.values.sum
+    tags = unmatched_tags.first(10).map {|tag, n| "#{tag} (#{n})" }.join(', ')
+    raise Fluent::UnrecoverableError, "mysql_replicator_elasticsearch: #{count} records in the chunk have a tag that does not match tag_format #{@tag_format.inspect}, so the chunk is not written: #{tags}"
+  end
 
   def new_http
     http = Net::HTTP.new(@host, @port.to_i)

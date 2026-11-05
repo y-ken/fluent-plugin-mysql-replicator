@@ -54,6 +54,17 @@ class Fluent::Plugin::MysqlReplicatorSolrOutput < Fluent::Plugin::Output
   end
 
   def write(chunk)
+    # A record whose tag does not match tag_format cannot be written. The whole chunk, with its other records, is not
+    # sent, and Fluent::UnrecoverableError makes Fluentd move it to the backup directory (or to <secondary>) at once,
+    # instead of retrying it. The message gives the tags and the number of records, not their contents.
+    unmatched_tags = Hash.new(0)
+    chunk.msgpack_each {|tag, _time, _record| unmatched_tags[tag] += 1 unless tag.match?(@tag_format) }
+    unless unmatched_tags.empty?
+      count = unmatched_tags.values.sum
+      tags = unmatched_tags.first(10).map {|tag, n| "#{tag} (#{n})" }.join(', ')
+      raise Fluent::UnrecoverableError, "mysql_replicator_solr: #{count} records in the chunk have a tag that does not match tag_format #{@tag_format.inspect}, so the chunk is not written: #{tags}"
+    end
+
     solr_connection = {}
 
     chunk.msgpack_each do |tag, time, record|

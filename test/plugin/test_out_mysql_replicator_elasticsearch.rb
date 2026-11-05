@@ -159,6 +159,24 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_empty(warnings)
   end
 
+  # A record whose tag does not match tag_format makes the chunk unrecoverable, so that Fluentd moves it to the backup
+  # directory at once, instead of retrying it. Nothing of the chunk is sent, and the error names the tag, not the
+  # contents of the records. (The test buffer throws the chunk away instead of writing a backup file.)
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable
+    bulk = stub_elastic
+    driver("<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    driver.run(default_tag: @tag) do
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 1, 'secret' => 'xyzzy'})
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 2, 'secret' => 'xyzzy'})
+      driver.feed(@tag, Fluent::EventTime.now, sample_record)
+    end
+    assert_not_requested(bulk)
+    error = driver.logs.grep(/got unrecoverable error/)
+    assert_equal(1, error.size)
+    assert_match(/error_class=Fluent::UnrecoverableError error="mysql_replicator_elasticsearch: 2 records .* tag_format .*: nomatch \(2\)"/, error.first)
+    assert_empty(driver.logs.grep(/xyzzy/))
+  end
+
   # A primary key whose bytes are not valid UTF-8 would become U+FFFD, the same _id for "\x80", "\x81" and the valid
   # "\xEF\xBF\xBD". Such a row is skipped, for an index and for a delete, with one warning for the chunk that gives
   # the number of rows and the indices, and the other rows of the chunk are sent.
