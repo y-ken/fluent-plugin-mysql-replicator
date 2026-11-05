@@ -267,11 +267,11 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   # Mapping types were removed in Elasticsearch 8.x and deprecated in 7.x.
-  # Detect the version and omit "_type" for 7.x and later. Returns whether to omit "_type" for this write. When the
-  # version cannot be detected, "_type" is sent for this write (assuming 6.x). After a connection error, a 429 or a
-  # 5xx, such as while Elasticsearch is starting, the version is detected again on the next write. After any other
-  # failure, such as 403 for a user without the monitor privilege, it is not tried again until a restart, as it would
-  # fail the same way on every write.
+  # Detect the version and omit "_type" for 7.x and later. Returns whether to omit "_type" for this write. After a
+  # connection error, a 429 or a 5xx, such as while Elasticsearch is starting, the error is raised, so that the bulk
+  # request is not sent with a guessed "_type" and Fluentd retries the chunk later, which detects the version again.
+  # After any other failure, such as 403 for a user without the monitor privilege, "_type" is sent (assuming 6.x), and
+  # the version is not detected again until a restart, as it would fail the same way on every write.
   def detect_type_suppression
     @es_version = elasticsearch_version
     @suppress_type = @es_version.first >= 7
@@ -279,7 +279,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     @suppress_type
   rescue => e
     if retriable_error?(e)
-      log.warn "mysql_replicator_elasticsearch: could not detect Elasticsearch version, sending '_type' (assuming 6.x) and detecting it again on the next write: #{e.class}: #{e.message}"
+      log.warn "mysql_replicator_elasticsearch: could not detect Elasticsearch version, not sending the bulk request, so that the chunk is retried: #{e.class}: #{e.message}"
+      raise
     else
       @suppress_type = false
       log.error "mysql_replicator_elasticsearch: could not detect Elasticsearch version, sending '_type' (assuming 6.x) until a restart: #{e.class}: #{e.message}"
@@ -298,13 +299,10 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     number.to_s.split('.').first(2).map(&:to_i)
   end
 
-  # The composable template waits until the version is detected.
-  class VersionNotDetectedYet < StandardError; end
-
-  # Whether a failure may go away by trying again: a connection error, a 5xx, or a version that is not detected yet.
+  # Whether a failure may go away by trying again: a connection error, a 429 or a 5xx.
   def retriable_error?(error)
     case error
-    when Net::HTTPFatalError, VersionNotDetectedYet then true
+    when Net::HTTPFatalError then true
     # 429, such as a circuit breaker that trips while the node is busy, can succeed later too.
     when Net::HTTPExceptions then error.response.code.to_s == '429'
 
@@ -316,16 +314,19 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   # Install the configured index template once, on the first write that succeeds in it. The template
   # is a server-side rule, so Elasticsearch applies it to every new index whose
   # name matches its index_patterns -- including future date-rolled indices --
-  # without any further action here. Failures are logged but never abort indexing.
-  # After a connection error, a 429 or a 5xx, the template is tried again on the next write. After any other failure,
-  # such as 400 for a broken template file or 403, it is not tried again until a restart.
+  # without any further action here.
+  # After a connection error, a 429 or a 5xx, the error is raised, so that the bulk request does not create an index
+  # with dynamic mapping before the template is in, and Fluentd retries the chunk later, which tries the template
+  # again. After any other failure, such as 400 for a broken template file or 403, the error is logged, the bulk
+  # request is sent, and the template is not tried again until a restart, as it would fail the same way on every write.
   def install_template_once
     return if @template_installed
     install_template
     @template_installed = true
   rescue => e
     if retriable_error?(e)
-      log.warn "mysql_replicator_elasticsearch: failed to install index template '#{@template_name}', trying again on the next write: #{e.class}: #{e.message}"
+      log.warn "mysql_replicator_elasticsearch: failed to install index template '#{@template_name}', not sending the bulk request, so that the chunk is retried: #{e.class}: #{e.message}"
+      raise
     else
       @template_installed = true
       log.error "mysql_replicator_elasticsearch: failed to install index template '#{@template_name}', not trying again until a restart: #{e.class}: #{e.message}"
@@ -333,8 +334,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   def install_template
+    # The version is known here, unless its detection failed for good.
     if !@use_legacy_template && @es_version.nil?
-      raise VersionNotDetectedYet, "the Elasticsearch version, which the composable template needs, is not detected yet" if @suppress_type.nil?
       raise "the composable template needs the Elasticsearch version, which could not be detected"
     end
     if !@use_legacy_template && !composable_templates_supported?
