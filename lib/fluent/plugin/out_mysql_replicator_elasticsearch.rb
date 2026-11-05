@@ -64,6 +64,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     @suppress_type = nil
     @es_version = nil
     @template_installed = false
+    @prepare_mutex = Mutex.new
   end
 
   def format(tag, time, record)
@@ -83,8 +84,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   def write(chunk)
-    suppress_type = @suppress_type.nil? ? detect_type_suppression : @suppress_type
-    install_template_once if @template_name
+    suppress_type = prepare_elasticsearch
 
     bulk_message = []
     utf8 = Utf8Converter.new
@@ -159,6 +159,17 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     count = unmatched_tags.values.sum
     tags = unmatched_tags.first(10).map {|tag, n| "#{tag} (#{n})" }.join(', ')
     raise Fluent::UnrecoverableError, "mysql_replicator_elasticsearch: #{count} records in the chunk have a tag that does not match tag_format #{@tag_format.inspect}, so the chunk is not written: #{tags}"
+  end
+
+  # Detects the version and installs the template in one flush at a time. With flush_thread_count 2 or more, they are
+  # then done once, and the other flushes wait for them, so that their bulk requests are not sent before the template.
+  # Returns whether to omit "_type" for this write.
+  def prepare_elasticsearch
+    @prepare_mutex.synchronize do
+      suppress_type = @suppress_type.nil? ? detect_type_suppression : @suppress_type
+      install_template_once if @template_name
+      suppress_type
+    end
   end
 
   def new_http

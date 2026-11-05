@@ -563,6 +563,33 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_empty(log_lines('warn'))
   end
 
+  # A chunk with the records, as a flush passes it to write.
+  def chunk_of(*records)
+    chunk = Fluent::Plugin::Buffer::MemoryChunk.new(Fluent::Plugin::Buffer::Metadata.new(nil, nil, nil))
+    chunk.concat(records.map {|r| [@tag, Fluent::EventTime.now, r].to_msgpack }.join, records.size)
+    chunk.commit
+    chunk.extend(Fluent::ChunkMessagePackEventStreamer)
+  end
+
+  # With flush_thread_count 2 or more, two flushes can write at the same time. The template is installed by one of
+  # them, and the other one waits for it before it sends its bulk request.
+  def test_installs_the_template_once_when_two_flushes_write_at_the_same_time
+    requests = []
+    # Recorded in to_return, which runs once for each request, unlike the block of with, which assert_requested runs too.
+    stub_request(:post, "http://localhost:9200/_bulk").to_return {|req| requests << :bulk; {:status => 200} }
+    get_root = stub_elastic_version("http://localhost:9200/", "8.18.0")
+    # A slow check, so that the second flush starts while the first one installs the template.
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return {|req| sleep 0.5; {:status => 404} }
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return {|req| requests << :put; {:status => 200} }
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run do
+      2.times.map { Thread.new { driver.instance.write(chunk_of(sample_record)) } }.each(&:join)
+    end
+    assert_requested(get_root, :times => 1)
+    assert_requested(put_tmpl, :times => 1)
+    assert_equal([:put, :bulk, :bulk], requests)
+  end
+
   def test_template_name_without_file_raises
     assert_raise(Fluent::ConfigError) do
       driver.configure("template_name my_tmpl\n")
