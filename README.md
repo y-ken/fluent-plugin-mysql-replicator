@@ -278,33 +278,6 @@ The backup directory is `backup/` under the `root_dir` of `<system>`, or under
 same. With `disable_chunk_backup true` in `<buffer>`, the chunk is thrown away
 instead.
 
-To put a backup file back in:
-
-1. Fix `tag_format`, or the `tag` of the input, so that the tags match.
-2. Add a `forward` source to the Fluentd that has the output, and restart it:
-
-   ```
-   <source>
-     @type forward
-     port 24224
-   </source>
-   ```
-
-3. Send the file to it. Each record in the file is `[tag, time, record]` in
-   MessagePack, which is a message of the forward protocol, so the file is sent
-   as it is:
-
-   ```
-   ruby -rsocket -e 'TCPSocket.open("localhost", 24224) {|s| IO.copy_stream(ARGV[0], s) }' /var/log/fluent/backup/worker0/es_out/65f69a4a987935044c1a751ef1c8ea8b.log
-   ```
-
-   Any Ruby works, for example the one of fluent-package (`/opt/fluent/bin/ruby`).
-   The records keep their tags and their times, to the second.
-   `fluent-binlog-reader` cannot read these files, as each record carries its tag.
-4. Move the file out of the backup directory once its records are written. A
-   file sent twice writes its documents twice, which leaves the same documents
-   for records that have a primary key.
-
 ## Output example
 
 An example of detecting insert/update/delete events.
