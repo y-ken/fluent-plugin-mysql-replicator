@@ -178,6 +178,38 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_empty(driver.logs.grep(/xyzzy/))
   end
 
+  # The tags are checked before GET / and the template, so that such a chunk goes to the backup at once while they
+  # fail with a 5xx, instead of being retried.
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable_while_get_root_fails
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 503, :body => "unavailable")
+    bulk = stub_request(:post, "http://localhost:9200/_bulk")
+    driver("<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    driver.run(default_tag: @tag) do
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 1})
+      driver.feed(@tag, Fluent::EventTime.now, sample_record)
+    end
+    assert_not_requested(get_root)
+    assert_not_requested(bulk)
+    assert_equal(1, driver.logs.grep(/got unrecoverable error.*nomatch \(1\)/).size)
+  end
+
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable_while_the_template_fails
+    get_root = stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 503)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 503)
+    bulk = stub_request(:post, "http://localhost:9200/_bulk")
+    driver("template_name my_tmpl\ntemplate_file #{write_template_file}\n<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    driver.run(default_tag: @tag) do
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 1})
+      driver.feed(@tag, Fluent::EventTime.now, sample_record)
+    end
+    assert_not_requested(get_root)
+    assert_not_requested(get_tmpl)
+    assert_not_requested(put_tmpl)
+    assert_not_requested(bulk)
+    assert_equal(1, driver.logs.grep(/got unrecoverable error.*nomatch \(1\)/).size)
+  end
+
   # A primary key whose bytes are not valid UTF-8 would become U+FFFD, the same _id for "\x80", "\x81" and the valid
   # "\xEF\xBF\xBD". Such a row is skipped, for an index and for a delete, with one warning for the chunk that gives
   # the number of rows and the indices, and the other rows of the chunk are sent.

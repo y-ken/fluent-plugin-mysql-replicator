@@ -84,11 +84,14 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   end
 
   def write(chunk)
+    unmatched_tags = Hash.new(0)
+    chunk.msgpack_each {|tag, _time, _record| unmatched_tags[tag] += 1 unless tag.match?(@tag_format) }
+    raise_unmatched_tags(unmatched_tags) unless unmatched_tags.empty?
+
     suppress_type = prepare_elasticsearch
 
     bulk_message = []
     utf8 = Utf8Converter.new
-    unmatched_tags = Hash.new(0)
     # The number of rows skipped for a primary key that is not valid UTF-8, by index.
     skipped = Hash.new(0)
 
