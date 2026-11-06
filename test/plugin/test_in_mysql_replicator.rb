@@ -203,4 +203,44 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal([['input.mysql.insert.id', {'id' => 7, 'items' => [{'name' => 'a'}, {'name' => 'b'}]}]], events)
     assert_equal(['SELECT name FROM item WHERE parent_id = 7'], clients.flat_map(&:queries).grep(/\ASELECT name/))
   end
+
+  SIMPLE_CONFIG = %[
+    tag   input.mysql.${event}.${primary_key}
+    query SELECT id, name FROM t
+  ]
+
+  # Runs one poll per table state, and returns the events of each poll.
+  def poll_tables(conf, *tables)
+    table = nil
+    instance, events, _ = polling_instance(conf) {|_sql| table }
+    @polled_instance = instance
+    tables.map do |rows|
+      table = rows
+      events.clear
+      poll_once(instance)
+      events.dup
+    end
+  end
+
+  # A LEFT JOIN, for example, can give a row whose primary key is NULL. The rows after it are still in the table.
+  def test_row_with_null_primary_key_does_not_make_the_rows_after_it_deleted
+    rows = [{'id' => 1, 'name' => 'a'}, {'id' => 2, 'name' => 'b'}, {'id' => 3, 'name' => 'c'}]
+    _, second = poll_tables(SIMPLE_CONFIG, rows, [rows[0], {'id' => nil, 'name' => 'x'}, rows[1], rows[2]])
+    assert_equal([], second)
+  end
+
+  def test_rows_after_a_null_primary_key_are_emitted
+    rows = [{'id' => nil, 'name' => 'x'}, {'id' => 1, 'name' => 'a'}]
+    first, = poll_tables(SIMPLE_CONFIG, rows)
+    assert_equal([['input.mysql.insert.id', {'id' => 1, 'name' => 'a'}]], first)
+  end
+
+  # One line for each poll, not for each row, as a LEFT JOIN can give many such rows on every poll.
+  def test_rows_without_the_primary_key_are_logged_once_for_each_poll
+    rows = [{'id' => nil, 'name' => 'x'}, {'id' => 1, 'name' => 'a'}, {'id' => nil, 'name' => 'y'}]
+    poll_tables(SIMPLE_CONFIG, rows, rows)
+    skipped = @polled_instance.log.out.logs.grep(/skipped/)
+    assert_equal(2, skipped.size)
+    assert_match(/\[error\]: mysql_replicator: skipped 2 rows without the primary key\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :primary_key=>id$/, skipped.first)
+  end
 end
