@@ -174,7 +174,7 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     instance = create_driver(conf).instance
     events = []
     clients = []
-    instance.define_singleton_method(:get_connection) { FakeMysqlClient.new(&responder).tap {|c| clients << c } }
+    instance.define_singleton_method(:get_connection) {|_session = false| FakeMysqlClient.new(&responder).tap {|c| clients << c } }
     instance.define_singleton_method(:emit_record) {|tag, record| events << [tag, record] }
     instance.instance_variable_set(:@table_hash, {})
     instance.instance_variable_set(:@ids, [])
@@ -202,6 +202,128 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     poll_once(instance)
     assert_equal([['input.mysql.insert.id', {'id' => 7, 'items' => [{'name' => 'a'}, {'name' => 'b'}]}]], events)
     assert_equal(['SELECT name FROM item WHERE parent_id = 7'], clients.flat_map(&:queries).grep(/\ASELECT name/))
+  end
+
+  # prepared_query sets up the session that the nested queries run in, such as a temporary table.
+  def test_nested_queries_run_in_the_session_of_prepared_query_on_every_poll
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/ then [{'name' => 'n'}]
+      end
+    end
+    2.times { poll_once(instance) }
+    # A new session for each poll, as a session cannot create the same temporary table again.
+    sessions = clients.select {|c| c.queries.any? {|q| q.start_with?('CREATE') } }
+    assert_equal(2, sessions.size, clients.map(&:queries).inspect)
+    sessions.each do |session|
+      assert_equal(['CREATE', 'SELECT', 'SELECT'], session.queries.map {|q| q[/\A\w+/] })
+      assert_true(session.closed?)
+    end
+    assert_equal(2, events.size)
+  end
+
+  # A SELECT in prepared_query, such as one that sets a user variable, leaves its rows to be read on a connection that
+  # streams its results. They were not read, so the connection was out of sync, and each nested query ran on a new
+  # connection without the session (and the old one was not closed).
+  def test_prepared_query_with_a_select_keeps_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SELECT @flag := 1
+      query          SELECT id, "SELECT name, @flag AS flag FROM item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name, @flag AS flag FROM item WHERE parent_id = ${id}'}]
+      when /\ASELECT @flag/ then [{'@flag := 1' => 1}]
+      when /\ASELECT name/ then [{'name' => 'n', 'flag' => 1}]
+      end
+    end
+    poll_once(instance)
+    session = clients.find {|c| c.queries.first.start_with?('SELECT @flag') }
+    assert_equal(['SELECT @flag := 1', 'SELECT name, @flag AS flag FROM item WHERE parent_id = 1'], session.queries)
+    assert_equal(2, clients.size)
+    assert_equal(1, events.size)
+  end
+
+  # A CALL of a procedure that returns rows gives more than one result, all of which must be read before the next
+  # query on the connection.
+  def test_prepared_query_with_a_call_that_returns_rows_keeps_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CALL p_sel()
+      query          SELECT id, "SELECT name FROM item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/ then [{'name' => 'n'}]
+      end
+    end
+    open_client = instance.method(:get_connection)
+    instance.define_singleton_method(:get_connection) do |*args|
+      open_client.call(*args).tap do |c|
+        # The rows of the procedure, then its status, after the result of CALL itself.
+        c.define_singleton_method(:query) do |sql|
+          raise Mysql2::Error, "Commands out of sync; you can't run this command now" unless more_results.empty?
+          super(sql).tap { more_results.push([{'ok' => 1}], []) if sql.start_with?('CALL') }
+        end
+        c.define_singleton_method(:ping) { super() && more_results.empty? }
+      end
+    end
+    poll_once(instance)
+    session = clients.find {|c| c.queries.first.start_with?('CALL') }
+    assert_equal(['CALL p_sel()', 'SELECT name FROM item WHERE parent_id = 1'], session.queries)
+    assert_equal(2, clients.size)
+    assert_equal(1, events.size)
+  end
+
+  # A connection for the nested queries that is lost in the middle of a poll is opened again with prepared_query, and
+  # the lost one is closed.
+  def test_lost_connection_of_prepared_query_is_opened_again_with_its_session
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    clients = nil
+    lost = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /\ASELECT name/
+        unless lost
+          lost = true
+          clients.find {|c| c.queries.last == sql }.close
+        end
+        [{'name' => 'n'}]
+      end
+    end
+    poll_once(instance)
+    sessions = clients.select {|c| c.queries.first.start_with?('CREATE') }
+    assert_equal([['CREATE', 'SELECT'], ['CREATE', 'SELECT']], sessions.map {|c| c.queries.map {|q| q[/\A\w+/] } })
+    assert_true(sessions.all?(&:closed?))
+    assert_equal(2, events.size)
+  end
+
+  def test_prepared_query_ending_with_a_semicolon_and_a_newline
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query SET @a = 1
+      query          SELECT id FROM t
+    ]
+    instance, events, _ = polling_instance(conf) {|sql| sql.start_with?('SELECT') ? [{'id' => 1}] : [] }
+    # A config value cannot end with a newline, but a value from a multi-line config or a script can.
+    instance.instance_variable_set(:@prepared_query, "SET @a = 1;\n")
+    poll_once(instance)
+    assert_equal(1, events.size)
   end
 
   SIMPLE_CONFIG = %[
@@ -242,5 +364,170 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     skipped = @polled_instance.log.out.logs.grep(/skipped/)
     assert_equal(2, skipped.size)
     assert_match(/\[error\]: mysql_replicator: skipped 2 rows without the primary key\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :primary_key=>id$/, skipped.first)
+  end
+
+  PREPARED_CONFIG = %[
+    tag            input.mysql.${event}.${primary_key}
+    prepared_query CALL p_prepare()
+    query          SELECT id, name FROM t
+  ]
+
+  # The message of a MySQL error can hold values of the rows.
+  def prepared_error
+    Mysql2::Error.new("Duplicate entry 'secret-value' for key 'PRIMARY'", nil, 1062, '23000')
+  end
+
+  # Runs one poll for each [rows, failure], and returns the events of each poll. failure is how prepared_query fails in
+  # that poll: nil (it does not), :statement (its statement fails), :after_rows (a CALL fails after the rows it returned)
+  # or :connect (its connection cannot be opened).
+  def prepared_polls(*polls)
+    table = failure = nil
+    instance, events, clients = polling_instance(PREPARED_CONFIG) do |sql|
+      if sql.start_with?('CALL')
+        raise prepared_error if failure == :statement
+        [{'ok' => 1}]
+      else
+        table
+      end
+    end
+    open_client = instance.method(:get_connection)
+    test = self
+    instance.define_singleton_method(:get_connection) do |session = false|
+      raise test.prepared_error if session && failure == :connect
+      open_client.call(session).tap do |c|
+        c.define_singleton_method(:next_result) do
+          raise test.prepared_error if failure == :after_rows && queries.last.start_with?('CALL')
+          super()
+        end
+      end
+    end
+    @polled_instance = instance
+    @polled_clients = clients
+    polls.map do |rows, fails|
+      table, failure = rows, fails
+      events.clear
+      poll_once(instance)
+      events.dup
+    end
+  end
+
+  # A poll whose prepared_query fails sends nothing, not even deletes, and keeps the ids and hashes of the previous poll,
+  # so the next poll sends what changed since then.
+  data(statement: :statement, after_rows: :after_rows, connect: :connect)
+  def test_poll_after_a_failed_prepared_query_sends_what_changed(failure)
+    before = [{'id' => 1, 'name' => 'a'}, {'id' => 2, 'name' => 'b'}]
+    after = [{'id' => 2, 'name' => 'b2'}, {'id' => 3, 'name' => 'c'}]
+    first, failed, recovered = prepared_polls([before, nil], [after, failure], [after, nil])
+    assert_equal(2, first.size)
+    assert_equal([], failed)
+    assert_equal([['input.mysql.update.id', {'id' => 2, 'name' => 'b2'}],
+                  ['input.mysql.insert.id', {'id' => 3, 'name' => 'c'}],
+                  ['input.mysql.delete.id', {'id' => 1}]], recovered)
+    assert_true(@polled_clients.all?(&:closed?))
+  end
+
+  # One line for each poll, with the error number and the SQLSTATE but not the message, and the poll does not wait: the
+  # interval (1m by default) would make it time out.
+  data(statement: :statement, after_rows: :after_rows, connect: :connect)
+  def test_failing_prepared_query_logs_one_line_for_each_poll(failure)
+    rows = [{'id' => 1, 'name' => 'a'}]
+    polls = prepared_polls([rows, nil], [rows, failure], [rows, failure], [rows, failure])
+    assert_equal([[], [], []], polls.drop(1))
+    logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
+    assert_equal(3, logs.size, logs.inspect)
+    logs.each do |line|
+      assert_match(/\[error\]: mysql_replicator: prepared_query failed; skipped this poll\. :tag=>input\.mysql\.\$\{event\}\.\$\{primary_key\} :errno=>1062 :sql_state=>23000$/, line)
+    end
+    assert_true(@polled_clients.all?(&:closed?))
+  end
+
+  # prepared_query that fails again on a connection opened again in the middle of a poll skips the rest of the poll. The
+  # rows sent before it are sent again by the next poll, which compares with the poll before the failed one.
+  def test_prepared_query_failing_in_the_middle_of_a_poll_keeps_the_previous_poll
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, name, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    table = nil
+    lose = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /\ACREATE/ then raise prepared_error if lose && clients.size > 4
+      when /FROM parent/ then table.map {|id, name| {'id' => id, 'name' => name, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'} }
+      when /\ASELECT name/
+        clients.find {|c| c.queries.last == sql }.close if lose
+        [{'name' => 'n'}]
+      end
+    end
+    table = [[1, 'a'], [2, 'b']]
+    poll_once(instance)
+    events.clear
+    table = [[1, 'a2'], [2, 'b2']]
+    lose = true
+    poll_once(instance)
+    assert_equal([1], events.map {|_, record| record['id'] })
+    assert_equal(1, instance.log.out.logs.grep(/prepared_query failed/).size)
+    events.clear
+    lose = false
+    poll_once(instance)
+    assert_equal([['input.mysql.update.id', 1], ['input.mysql.update.id', 2]], events.map {|tag, record| [tag, record['id']] })
+    assert_true(clients.all?(&:closed?))
+  end
+
+  # A nested query that fails as the connection of prepared_query was lost opens it again at once, and prepared_query
+  # failing there skips the poll with one line, without waiting for the interval in query() too (it would time out).
+  def test_prepared_query_failing_after_a_lost_connection_waits_once
+    conf = %[
+      tag            input.mysql.${event}.${primary_key}
+      prepared_query CREATE TEMPORARY TABLE tmp_item AS SELECT * FROM item
+      query          SELECT id, "SELECT name FROM tmp_item WHERE parent_id = ${id}" AS items FROM parent
+    ]
+    lost = false
+    instance, events, clients = polling_instance(conf) do |sql|
+      case sql
+      when /\ACREATE/ then raise prepared_error if lost
+      when /FROM parent/ then [{'id' => 1, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'},
+                               {'id' => 2, 'items' => 'SELECT name FROM tmp_item WHERE parent_id = ${id}'}]
+      when /parent_id = 2/
+        lost = true
+        clients.find {|c| c.queries.last == sql }.close
+        raise Mysql2::Error.new('Lost connection to server during query', nil, 2013, 'HY000')
+      else [{'name' => 'n'}]
+      end
+    end
+    poll_once(instance)
+    assert_equal([1], events.map {|_, record| record['id'] })
+    logs = instance.log.out.logs.grep(/\[(warn|error)\]/)
+    assert_equal(1, logs.size, logs.inspect)
+    assert_match(/prepared_query failed; skipped this poll\. .* :errno=>1062 :sql_state=>23000$/, logs.first)
+    assert_true(clients.all?(&:closed?))
+  end
+
+  # Replaces Mysql2::Client.new with the block while the test runs.
+  def with_client_new(impl)
+    Mysql2::Client.define_singleton_method(:new, &impl)
+    yield
+  ensure
+    Mysql2::Client.singleton_class.send(:remove_method, :new)
+  end
+
+  # The connection of prepared_query is not connected again by the client, which would lose the session, and a failure
+  # to connect is raised at once instead of logged and tried again after the interval. Other connections keep both.
+  def test_connection_of_prepared_query_does_not_reconnect_and_does_not_wait
+    instance = create_driver(PREPARED_CONFIG).instance
+    slept = []
+    instance.define_singleton_method(:sleep) {|seconds| slept << seconds }
+    options = []
+    with_client_new(lambda {|opts| options << opts; :client }) do
+      assert_equal(:client, instance.get_connection(true))
+      assert_equal(:client, instance.get_connection)
+    end
+    assert_equal([false, true], options.map {|opts| opts[:reconnect] })
+    error = Mysql2::Error.new("Access denied for user 'secret'", nil, 1045, '28000')
+    with_client_new(lambda {|_opts| raise error }) do
+      assert_raise(Mysql2::Error) { instance.get_connection(true) }
+    end
+    assert_equal([], slept)
   end
 end

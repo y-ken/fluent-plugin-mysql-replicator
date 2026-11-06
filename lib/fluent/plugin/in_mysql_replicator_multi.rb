@@ -6,6 +6,18 @@ module Fluent::Plugin
 
     helpers :thread
 
+    # The connection of prepared_query was lost in the middle of a poll. It holds only the error number and the SQLSTATE:
+    # the message of MySQL can hold values of the rows.
+    class PreparedSessionLost < StandardError
+      attr_reader :errno, :sql_state
+
+      def initialize(error)
+        @errno = error.error_number
+        @sql_state = error.sql_state
+        super("lost the connection of prepared_query. :errno=>#{@errno} :sql_state=>#{@sql_state}")
+      end
+    end
+
     def initialize
       require 'mysql2'
       require 'digest/sha1'
@@ -85,15 +97,27 @@ module Fluent::Plugin
         json_columns = (config['json_columns'] || '').split(',').map(&:strip).reject(&:empty?)
         previous_id = current_id = nil
         while @running
+          previous_id_at_start = previous_id
           rows_count = 0
           start_time = Time.now
           db = nil
           nest_db = nil
           begin
             unless config['prepared_query'].nil?
-              nest_db = get_origin_connection(config)
-              config['prepared_query'].strip.split(/;/).each do |query|
-                nest_db.query(query)
+              # The client does not connect again, which would lose the session of prepared_query without an error.
+              nest_db = get_origin_connection(config, config['prepared_query'].strip.empty?)
+              # A statement that fails, including a CALL that fails after its rows, skips the poll, which is tried
+              # again on a new connection after the interval. Only the error number and the SQLSTATE are logged: the
+              # message of MySQL can hold values of the rows.
+              begin
+                run_prepared_query(nest_db, config['prepared_query'])
+              rescue Mysql2::Error => e
+                nest_db.close
+                @mutex.synchronize {
+                  log.error "mysql_replicator_multi: prepared_query failed; skipped this poll. :setting_name=>#{config['name']} :errno=>#{e.error_number} :sql_state=>#{e.sql_state}"
+                }
+                sleep config['interval']
+                next
               end
             end
             db = get_origin_connection(config)
@@ -102,7 +126,7 @@ module Fluent::Plugin
               parse_json_columns!(row, json_columns)
               row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
                 row[k] = [] unless row[k].is_a?(Array)
-                nest_db.query(v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
+                nest_query(nest_db, config, v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
                   nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
                   row[k] << nest_row
                 end
@@ -119,6 +143,20 @@ module Fluent::Plugin
               previous_id = current_id
               rows_count += 1
             end
+          rescue PreparedSessionLost => e
+            # The rest of the poll is skipped, as when prepared_query fails. The next poll does not compare its first row
+            # with the last row seen here, which would make the rows after it look deleted. If this poll had rows, its
+            # first row already did that comparison with the poll before, and the rows that it added to hash_tables would
+            # look deleted if it were done again, so the next poll does not compare its first row at all; rows deleted
+            # at the end are found at the end of the next poll.
+            previous_id = rows_count.zero? ? previous_id_at_start : nil
+            db.close if db
+            nest_db.close
+            @mutex.synchronize {
+              log.error "mysql_replicator_multi: lost the connection of prepared_query; skipped the rest of this poll. :setting_name=>#{config['name']} :errno=>#{e.errno} :sql_state=>#{e.sql_state}"
+            }
+            sleep config['interval']
+            next
           rescue Mysql2::Error => e
             raise e unless config['enable_retry'] == 1
 
@@ -307,7 +345,30 @@ module Fluent::Plugin
       end
     end
 
-    def get_origin_connection(config)
+    # Runs a nested query on nest_db and reads its rows. With prepared_query, nest_db does not connect again, so a lost
+    # connection, also while the rows are read, raises PreparedSessionLost; connecting again would run the rest of the
+    # poll without the session.
+    def nest_query(nest_db, config, query)
+      nest_db.query(query).to_a
+    rescue Mysql2::Error => e
+      raise if config['prepared_query'].to_s.strip.empty? || nest_db.ping
+      raise PreparedSessionLost.new(e)
+    end
+
+    # The results of a statement, such as a SELECT that sets a user variable or a CALL of a procedure that returns rows,
+    # are read out: the connection streams its results, and one left unread makes the next query on it fail.
+    def run_prepared_query(db, prepared_query)
+      prepared_query.split(/;/).map(&:strip).reject(&:empty?).each do |query|
+        result = db.query(query)
+        result.each {} if result
+        while db.next_result
+          more = db.store_result
+          more.each {} if more
+        end
+      end
+    end
+
+    def get_origin_connection(config, reconnect = true)
       begin
         return Mysql2::Client.new(
           :host => config['host'],
@@ -316,7 +377,7 @@ module Fluent::Plugin
           :password => config['password'],
           :database => config['database'],
           :encoding => 'utf8',
-          :reconnect => true,
+          :reconnect => reconnect,
           :stream => true,
           :cache_rows => false
         )
