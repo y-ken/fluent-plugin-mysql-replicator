@@ -150,7 +150,9 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     end
 
     request.body = bulk_message.join("\n")
-    new_http.request(request).value
+    response = new_http.request(request)
+    response.value
+    log_bulk_errors(response.body)
   end
 
   private
@@ -179,6 +181,30 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     http = Net::HTTP.new(@host, @port.to_i)
     http.use_ssl = @ssl
     http
+  end
+
+  # Elasticsearch answers 200 to a bulk request even when some of its documents fail, for example on a mapping
+  # error, and reports them per document in "items". Log them, so that they are not lost silently. Only the index, the
+  # status and the type of the error are logged: the reason of the error can contain a part of the value of a field
+  # ("Preview of field's value"), and the _id can be built from the values of the primary key.
+  def log_bulk_errors(body)
+    # Most responses have no errors, and a response has an item per document, so it is parsed only when it has some.
+    return unless body.to_s.include?('"errors":true')
+    result = JSON.parse(body)
+    return unless result.is_a?(Hash) && result['errors']
+    items = Array(result['items']).select {|item| item.is_a?(Hash) && item.values.first.is_a?(Hash) }
+    # A delete that answers 404 found nothing to delete, such as a delete to an index that is not created yet (an index
+    # per day, for example), which leaves the same result as a delete that succeeded.
+    failed = items.reject {|item| item.keys.first == 'delete' && item.values.first['status'].to_i == 404 }
+                  .map {|item| item.values.first }.select {|item| item['error'] }
+    return if failed.empty?
+    examples = failed.first(5).map do |item|
+      error = item['error']
+      "index=#{item['_index']} status=#{item['status']} type=#{error.is_a?(Hash) ? error['type'] : 'unknown'}"
+    end
+    log.error "mysql_replicator_elasticsearch: #{failed.size} of #{items.size} documents failed in a bulk request: #{examples.join(', ')}"
+  rescue StandardError => e
+    log.warn "mysql_replicator_elasticsearch: could not read the bulk response: #{e.class}"
   end
 
   # Converts the strings of a record to UTF-8 before JSON.generate. mysql2 gives BLOB and BINARY columns as ASCII-8BIT
