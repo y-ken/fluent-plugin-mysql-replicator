@@ -2,6 +2,7 @@ require 'helper'
 require 'fluent/test/driver/output'
 require 'webmock/test_unit'
 require 'tempfile'
+require 'tmpdir'
 
 WebMock.disable_net_connect!
 
@@ -175,6 +176,38 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal(1, error.size)
     assert_match(/error_class=Fluent::UnrecoverableError error="mysql_replicator_elasticsearch: 2 records .* tag_format .*: nomatch \(2\)"/, error.first)
     assert_empty(driver.logs.grep(/xyzzy/))
+  end
+
+  # The tags are checked before GET / and the template, so that such a chunk goes to the backup at once while they
+  # fail with a 5xx, instead of being retried.
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable_while_get_root_fails
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 503, :body => "unavailable")
+    bulk = stub_request(:post, "http://localhost:9200/_bulk")
+    driver("<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    driver.run(default_tag: @tag) do
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 1})
+      driver.feed(@tag, Fluent::EventTime.now, sample_record)
+    end
+    assert_not_requested(get_root)
+    assert_not_requested(bulk)
+    assert_equal(1, driver.logs.grep(/got unrecoverable error.*nomatch \(1\)/).size)
+  end
+
+  def test_chunk_with_a_tag_not_matching_tag_format_is_unrecoverable_while_the_template_fails
+    get_root = stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 503)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 503)
+    bulk = stub_request(:post, "http://localhost:9200/_bulk")
+    driver("template_name my_tmpl\ntemplate_file #{write_template_file}\n<buffer>\n disable_chunk_backup true\n</buffer>\n")
+    driver.run(default_tag: @tag) do
+      driver.feed('nomatch', Fluent::EventTime.now, {'id' => 1})
+      driver.feed(@tag, Fluent::EventTime.now, sample_record)
+    end
+    assert_not_requested(get_root)
+    assert_not_requested(get_tmpl)
+    assert_not_requested(put_tmpl)
+    assert_not_requested(bulk)
+    assert_equal(1, driver.logs.grep(/got unrecoverable error.*nomatch \(1\)/).size)
   end
 
   # A primary key whose bytes are not valid UTF-8 would become U+FFFD, the same _id for "\x80", "\x81" and the valid
@@ -402,6 +435,214 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
     driver.run(default_tag: @tag) { driver.feed(sample_record) }
     assert_not_requested(put_tmpl)
+  end
+
+  # Records the bulk requests of a run, one array of parsed lines per request.
+  def stub_bulk_requests(url="http://localhost:9200/_bulk")
+    bulks = []
+    stub_request(:post, url).with {|req| bulks << req.body.split("\n").map {|r| JSON.parse(r) } }
+    bulks
+  end
+
+  def version_response(version)
+    {:status => 200, :headers => {"Content-Type" => "application/json"}, :body => %({"version":{"number":"#{version}"}})}
+  end
+
+  # Fluentd retries a chunk whose write raised. These settings make it retry soon.
+  RETRY_SOON = "<buffer>\nretry_wait 0.1\nretry_randomize false\nflush_thread_interval 0.1\n</buffer>\n"
+
+  # One chunk, which Fluentd retries while its write raises.
+  def write_with_retries
+    driver.run(default_tag: @tag, force_flush_retry: true) do
+      driver.feed(sample_record)
+      driver.flush
+    end
+  end
+
+  # Elasticsearch may not answer yet on the first write, for example when both start together. The bulk request is
+  # then not sent with a guessed "_type", which Elasticsearch 8 rejects, and the version is detected again when Fluentd
+  # retries the chunk.
+  def test_detects_the_version_again_after_a_failed_detection
+    bulks = stub_bulk_requests
+    get_root = stub_request(:get, "http://localhost:9200/").to_return({:status => 503, :body => "unavailable"}, version_response("8.18.0"))
+    driver.configure(RETRY_SOON)
+    write_with_retries
+    assert_requested(get_root, :times => 2)
+    assert_equal(1, bulks.size)
+    assert_false(bulks[0][0]['index'].has_key?('_type'))
+  end
+
+  # The bulk request is not sent before the template is in, as it could create the index with dynamic mapping, which
+  # a template installed later does not change.
+  def test_installs_the_template_again_after_a_failed_install
+    requests = []
+    stub_request(:post, "http://localhost:9200/_bulk").to_return {|req| requests << :bulk; {:status => 200} }
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return({:status => 500, :body => "{}"}, {:status => 200, :body => "{}"})
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n" + RETRY_SOON)
+    write_with_retries
+    assert_requested(put_tmpl, :times => 2)
+    assert_equal([:bulk], requests)
+  end
+
+  # The composable template needs the version. It is installed once the version is detected, before the bulk request.
+  def test_installs_the_composable_template_once_the_version_is_known
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_return({:status => 503, :body => "unavailable"}, version_response("8.18.0"))
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 200, :body => "{}")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n" + RETRY_SOON)
+    write_with_retries
+    assert_requested(put_tmpl, :times => 1)
+    assert_equal(1, bulks.size)
+  end
+
+  def three_writes
+    driver.run(default_tag: @tag) do
+      3.times do
+        driver.feed(sample_record)
+        driver.flush
+      end
+    end
+  end
+
+  def log_lines(level)
+    driver.logs.grep(/\[#{level}\]: mysql_replicator_elasticsearch/)
+  end
+
+  # A connection error, like a 5xx, may go away, so the chunk is retried and the version is detected again.
+  def test_detects_the_version_again_after_a_connection_error
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_raise(Errno::ECONNREFUSED).then.to_return(version_response("8.18.0"))
+    driver.configure(RETRY_SOON)
+    write_with_retries
+    assert_equal([nil], bulks.map {|lines| lines[0]['index']['_type'] })
+  end
+
+  # 429, such as circuit_breaking_exception while the node is busy, can succeed later, like a 5xx.
+  def test_detects_the_version_again_after_a_429
+    bulks = stub_bulk_requests
+    stub_request(:get, "http://localhost:9200/").to_return(:status => 429, :body => '{"error":"circuit_breaking_exception"}').then.to_return(version_response("8.18.0"))
+    driver.configure(RETRY_SOON)
+    write_with_retries
+    assert_equal([nil], bulks.map {|lines| lines[0]['index']['_type'] })
+    assert_equal(1, log_lines('warn').size)
+    assert_empty(log_lines('error'))
+  end
+
+  # A connection error on the template, like a 5xx, may go away, so the chunk is retried, and the bulk request is
+  # sent once the template is in.
+  def test_installs_the_template_again_after_a_connection_error
+    requests = []
+    stub_request(:post, "http://localhost:9200/_bulk").to_return {|req| requests << :bulk; {:status => 200} }
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_raise(Errno::ECONNRESET).then.to_return(:status => 404)
+    stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return {|req| requests << :put; {:status => 200} }
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n" + RETRY_SOON)
+    write_with_retries
+    assert_requested(get_tmpl, :times => 2)
+    assert_equal([:put, :bulk], requests)
+  end
+
+  # A 4xx on GET /, such as 403 for a user without the monitor privilege, fails the same way on every write. It is
+  # logged once, and "_type" is sent (assuming 6.x) until a restart, as before.
+  def test_does_not_detect_the_version_again_after_a_4xx
+    bulks = stub_bulk_requests
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 403, :body => '{"error":"unauthorized"}')
+    three_writes
+    assert_requested(get_root, :times => 1)
+    assert_equal(['mytype'] * 3, bulks.map {|lines| lines[0]['index']['_type'] })
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+  end
+
+  # A 4xx on the template, such as 400 for a broken template file, fails the same way on every write. The bulk
+  # requests are still sent.
+  def test_does_not_install_the_template_again_after_a_4xx
+    bulks = stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 400, :body => '{"error":"bad template"}')
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_tmpl, :times => 1)
+    assert_requested(put_tmpl, :times => 1)
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+    assert_equal(3, bulks.size)
+  end
+
+  def test_does_not_install_the_template_again_after_a_4xx_on_its_check
+    bulks = stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 403)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_tmpl, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(1, log_lines('error').size)
+    assert_equal(3, bulks.size)
+  end
+
+  # A template_file that cannot be read, such as a directory, fails the same way on every write. The bulk requests
+  # are still sent.
+  def test_does_not_install_the_template_again_when_its_file_cannot_be_read
+    bulks = stub_bulk_requests
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    get_tmpl = stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return(:status => 404)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    Dir.mktmpdir do |dir|
+      driver.configure("template_name my_tmpl\ntemplate_file #{dir}\n")
+      three_writes
+    end
+    assert_requested(get_tmpl, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(1, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+    assert_equal(3, bulks.size)
+  end
+
+  # The composable template needs the version. When it cannot be detected for good, the template is given up too.
+  def test_gives_up_the_composable_template_when_the_version_cannot_be_detected
+    bulks = stub_bulk_requests
+    get_root = stub_request(:get, "http://localhost:9200/").to_return(:status => 403)
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl")
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    three_writes
+    assert_requested(get_root, :times => 1)
+    assert_not_requested(put_tmpl)
+    assert_equal(2, log_lines('error').size)
+    assert_empty(log_lines('warn'))
+    assert_equal(3, bulks.size)
+  end
+
+  # A chunk with the records, as a flush passes it to write.
+  def chunk_of(*records)
+    chunk = Fluent::Plugin::Buffer::MemoryChunk.new(Fluent::Plugin::Buffer::Metadata.new(nil, nil, nil))
+    chunk.concat(records.map {|r| [@tag, Fluent::EventTime.now, r].to_msgpack }.join, records.size)
+    chunk.commit
+    chunk.extend(Fluent::ChunkMessagePackEventStreamer)
+  end
+
+  # With flush_thread_count 2 or more, two flushes can write at the same time. The template is installed by one of
+  # them, and the other one waits for it before it sends its bulk request.
+  def test_installs_the_template_once_when_two_flushes_write_at_the_same_time
+    requests = []
+    # Recorded in to_return, which runs once for each request, unlike the block of with, which assert_requested runs too.
+    stub_request(:post, "http://localhost:9200/_bulk").to_return {|req| requests << :bulk; {:status => 200} }
+    get_root = stub_elastic_version("http://localhost:9200/", "8.18.0")
+    # A slow check, so that the second flush starts while the first one installs the template.
+    stub_request(:get, "http://localhost:9200/_index_template/my_tmpl").to_return {|req| sleep 0.5; {:status => 404} }
+    put_tmpl = stub_request(:put, "http://localhost:9200/_index_template/my_tmpl").to_return {|req| requests << :put; {:status => 200} }
+    driver.configure("template_name my_tmpl\ntemplate_file #{write_template_file}\n")
+    driver.run do
+      2.times.map { Thread.new { driver.instance.write(chunk_of(sample_record)) } }.each(&:join)
+    end
+    assert_requested(get_root, :times => 1)
+    assert_requested(put_tmpl, :times => 1)
+    assert_equal([:put, :bulk, :bulk], requests)
   end
 
   def test_template_name_without_file_raises
