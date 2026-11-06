@@ -34,6 +34,8 @@ module Fluent::Plugin
     config_param :manager_database, :string, :default => 'replicator_manager'
     config_param :tag, :string, :default => nil
 
+    DELETE_BATCH_SIZE = 1000
+
     config_param :bulk_insert_count, :integer, :default => 50
     config_param :bulk_insert_timeout, :integer, :default => 10
 
@@ -341,7 +343,10 @@ module Fluent::Plugin
       when :update
         query = "UPDATE hash_tables SET setting_query_hash = '#{opts[:hash]}' WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk = '#{opts[:id]}'"
       when :delete
-        query = "DELETE FROM hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk IN(#{opts[:ids].join(',')})"
+        # In batches, as one statement for a large number of ids can be larger than max_allowed_packet.
+        opts[:ids].each_slice(DELETE_BATCH_SIZE) do |ids|
+          @manager_db.query("DELETE FROM hash_tables WHERE setting_name = '#{opts[:setting_name]}' AND setting_query_pk IN(#{ids.join(',')})")
+        end
       end
       @manager_db.query(query) unless query.nil?
     end
