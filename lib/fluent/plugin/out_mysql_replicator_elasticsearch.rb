@@ -185,8 +185,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
   # Elasticsearch answers 200 to a bulk request even when some of its documents fail, for example on a mapping
   # error, and reports them per document in "items". Log them, so that they are not lost silently. Only the index, the
-  # _id, the status and the type of the error are logged: the reason of the error can contain a part of the value of
-  # a field ("Preview of field's value").
+  # status and the type of the error are logged: the reason of the error can contain a part of the value of a field
+  # ("Preview of field's value"), and the _id can be built from the values of the primary key.
   def log_bulk_errors(body)
     # Most responses have no errors, and a response has an item per document, so it is parsed only when it has some.
     return unless body.to_s.include?('"errors":true')
@@ -200,11 +200,11 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     return if failed.empty?
     examples = failed.first(5).map do |item|
       error = item['error']
-      "index=#{item['_index']} _id=#{item['_id']} status=#{item['status']} type=#{error.is_a?(Hash) ? error['type'] : 'unknown'}"
+      "index=#{item['_index']} status=#{item['status']} type=#{error.is_a?(Hash) ? error['type'] : 'unknown'}"
     end
     log.error "mysql_replicator_elasticsearch: #{failed.size} of #{items.size} documents failed in a bulk request: #{examples.join(', ')}"
-  rescue JSON::ParserError => e
-    log.warn "mysql_replicator_elasticsearch: could not parse the bulk response: #{e.class}"
+  rescue StandardError => e
+    log.warn "mysql_replicator_elasticsearch: could not read the bulk response: #{e.class}"
   end
 
   # Converts the strings of a record to UTF-8 before JSON.generate. mysql2 gives BLOB and BINARY columns as ASCII-8BIT

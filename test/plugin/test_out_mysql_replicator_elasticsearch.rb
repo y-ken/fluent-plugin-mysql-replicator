@@ -665,7 +665,7 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     end
     errors = driver.logs.grep(/\[error\]/)
     assert_equal(1, errors.size, driver.logs.inspect)
-    assert_match(/1 of 2 documents failed in a bulk request: index=myindex _id=2 status=400 type=document_parsing_exception$/, errors.first)
+    assert_match(/1 of 2 documents failed in a bulk request: index=myindex status=400 type=document_parsing_exception$/, errors.first)
     assert_empty(driver.logs.grep(/xyzzy|Preview/))
   end
 
@@ -676,6 +676,17 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
       :body => '{"took":1,"errors":true,"items":[{"delete":{"_index":"users-20261104","_id":"1","status":404,"error":{"type":"index_not_found_exception","reason":"no such index [users-20261104]"}}}]}')
     driver.run(default_tag: 'myindex.mytype.delete.id') { driver.feed(sample_record) }
     assert_empty(log_lines('error'))
+  end
+
+  # Elasticsearch does not answer like this, but a malformed response is only logged, and the write succeeds, as its
+  # documents may have been written.
+  def test_warns_once_for_a_bulk_response_that_cannot_be_read
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(:status => 200, :headers => {'Content-Type' => 'application/json'},
+      :body => '{"took":1,"errors":true,"items":[{"delete":{"_index":"myindex","_id":"1","status":false}}]}')
+    driver.run(default_tag: 'myindex.mytype.delete.id') { driver.feed(sample_record) }
+    assert_equal(["could not read the bulk response: NoMethodError"], log_lines('warn').map {|l| l[/could not read.*/] }, driver.logs.inspect)
+    assert_empty(driver.logs.grep(/unrecoverable error|failed to flush|bad chunk/))
   end
 
   def test_does_not_log_errors_for_a_bulk_request_without_errors
