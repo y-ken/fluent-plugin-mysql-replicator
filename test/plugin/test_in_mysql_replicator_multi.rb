@@ -38,6 +38,82 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     [instance, manager]
   end
 
+  def setting(overrides = {})
+    {
+      'name' => 'users', 'query' => 'SELECT id, name FROM users ORDER BY id', 'prepared_query' => '',
+      'primary_key' => 'id', 'interval' => 60, 'retry_interval' => 30, 'json_columns' => nil,
+      'enable_delete' => 1, 'enable_loose_insert' => 0, 'enable_loose_delete' => 0, 'enable_retry' => 0,
+    }.merge(overrides)
+  end
+
+  def users(*ids)
+    ids.map {|id| {'id' => id, 'name' => "user#{id}"} }
+  end
+
+  # Runs poll(config) for one poll per table, and returns the events of each poll as [tag, record]. A table is the
+  # rows of the query, or a Proc that returns them. The sleep after each poll moves on to the next table, and
+  # hash_tables is a FakeHashTables that is written at once (bulk_insert_count 1).
+  def run_polls(config, *tables)
+    hash_tables = FakeHashTables.new
+    instance, manager = instance_with_manager(CONFIG + "bulk_insert_count 1\n") {|sql| hash_tables.call(sql) }
+    instance.instance_variable_set(:@manager_db, manager)
+    instance.instance_variable_set(:@mutex, Mutex.new)
+    instance.instance_variable_set(:@running, true)
+    instance.instance_variable_set(:@hash_table_bulk_insert, [])
+    instance.instance_variable_set(:@hash_table_bulk_insert_last_time, Time.now)
+    polls = [[]]
+    instance.define_singleton_method(:emit_record) {|tag, record| polls.last << [tag, record] }
+    instance.define_singleton_method(:get_origin_connection) do |_config, _reconnect = true|
+      FakeMysqlClient.new do |sql|
+        next [] unless sql == config['query']
+        table = tables[polls.size - 1]
+        table.respond_to?(:call) ? table.call : table
+      end
+    end
+    instance.define_singleton_method(:sleep) do |seconds|
+      next unless seconds == config['interval']
+      if polls.size >= tables.size
+        @running = false
+      else
+        polls << []
+      end
+    end
+    @polled_instance = instance
+    Timeout.timeout(10) { instance.poll(config) }
+    polls
+  end
+
+  def logs(level)
+    @polled_instance.log.out.logs.grep(/\[#{level}\]/)
+  end
+
+  def deletes(events)
+    events.select {|tag, _| tag.include?('.delete.') }.map {|_, record| record['id'] }
+  end
+
+  def test_run_polls_replicates_inserts_and_a_deleted_middle_row
+    first, second = run_polls(setting, users(1, 2, 3), users(1, 3))
+    assert_equal([1, 2, 3], first.map {|_, record| record['id'] })
+    assert_equal(['replicator.users.insert.id'] * 3, first.map(&:first))
+    assert_equal([2], deletes(second))
+  end
+
+  # A LEFT JOIN, for example, can give a row whose primary key is NULL. It is skipped, and the rows around it are
+  # still compared with each other, so a row deleted next to it is detected.
+  def test_row_with_null_primary_key_is_skipped_and_deletes_around_it_are_detected
+    _, second = run_polls(setting, users(1, 2, 3), users(1) + [{'id' => nil, 'name' => 'x'}] + users(3))
+    assert_equal([['replicator.users.delete.id', {'id' => 2}]], second)
+  end
+
+  # One line for each poll, not for each row, as a LEFT JOIN can give many such rows on every poll.
+  def test_rows_without_the_primary_key_are_logged_once_for_each_poll
+    table = [{'id' => nil, 'name' => 'x'}] + users(1) + [{'id' => nil, 'name' => 'y'}]
+    run_polls(setting, table, table)
+    skipped = logs('error').grep(/skipped/)
+    assert_equal(2, skipped.size)
+    assert_match(/mysql_replicator_multi: skipped 2 rows without the primary key\. :setting_name=>users :primary_key=>id$/, skipped.first)
+  end
+
   # A failed flush, such as a timeout of the manager database, is logged, and the buffer is flushed again later.
   def test_hash_table_flusher_survives_a_failed_flush
     inserts = 0

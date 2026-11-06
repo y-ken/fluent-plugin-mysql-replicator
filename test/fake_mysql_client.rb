@@ -23,7 +23,7 @@ class FakeMysqlClient
     end
     @queries << sql
     rows = (@responder.call(sql) || []).map(&:dup)
-    return rows unless sql =~ /\A\s*SELECT/i
+    return rows unless rows.is_a?(Array) && sql =~ /\A\s*SELECT/i
     @unread = FakeResult.new(rows) { @unread = nil }
   end
 
@@ -53,6 +53,42 @@ class FakeMysqlClient
 
   def closed?
     @closed
+  end
+end
+
+# The hash_tables of the manager database of mysql_replicator_multi, for the queries that the plugin sends.
+class FakeHashTables
+  # {[setting_name, pk] => hash}
+  attr_reader :rows
+
+  def initialize
+    @rows = {}
+  end
+
+  def call(sql)
+    case sql.gsub(/\s+/, ' ').strip
+    when /\ASELECT SQL_NO_CACHE setting_query_hash FROM hash_tables WHERE setting_query_pk = (-?\d+) AND setting_name = '([^']*)'\z/
+      hash = @rows[[$2, $1.to_i]]
+      hash ? [{'setting_query_hash' => hash}] : []
+    when /\ASELECT SQL_NO_CACHE setting_query_pk FROM hash_tables WHERE setting_name = '([^']*)' AND (.+)\z/
+      name, condition = $1, $2
+      comparisons = condition.scan(/setting_query_pk ([<>]) (-?\d+)/).map {|op, n| [op, n.to_i] }
+      combine = condition.include?(' OR ') ? :any? : :all?
+      @rows.keys.select {|s, pk| s == name && comparisons.public_send(combine) {|op, n| pk.public_send(op, n) } }
+           .map(&:last).sort.map {|pk| {'setting_query_pk' => pk} }
+    when /\AUPDATE hash_tables SET setting_query_hash = '([^']*)' WHERE setting_name = '([^']*)' AND setting_query_pk = '(-?\d+)'\z/
+      @rows[[$2, $3.to_i]] = $1
+      []
+    when /\ADELETE FROM hash_tables WHERE setting_name = '([^']*)' AND setting_query_pk IN\(([^)]*)\)\z/
+      name = $1
+      $2.split(',').each {|pk| @rows.delete([name, pk.to_i]) }
+      []
+    when /\AINSERT INTO hash_tables \(setting_name,setting_query_pk,setting_query_hash\) VALUES (.+) ON DUPLICATE KEY UPDATE/
+      $1.scan(/\('([^']*)','(-?\d+)','([^']*)'\)/) {|name, pk, hash| @rows[[name, pk.to_i]] = hash }
+      []
+    else
+      raise "FakeHashTables: unexpected query: #{sql}"
+    end
   end
 end
 
