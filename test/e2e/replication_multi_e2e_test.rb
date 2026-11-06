@@ -9,7 +9,8 @@
 # registers a settings row pointing at a source table, boots Fluentd wiring
 # in_mysql_replicator_multi -> out_mysql_replicator_elasticsearch, and asserts
 # that INSERT / UPDATE / DELETE propagate to Elasticsearch AND that the
-# hash_tables state is maintained.
+# hash_tables state is maintained. It also checks that the plugin installs the
+# index template and that the new index gets the template's setting.
 #
 # Delete detection in the multi plugin is gap-based against hash_tables, so the
 # test seeds three rows and deletes the *middle* one (id=2) to exercise it.
@@ -35,6 +36,7 @@ end
 # --- 1. Seed the source database --------------------------------------------
 step "seeding MySQL source database '#{SOURCE_DB}'"
 es_delete_index(INDEX)
+es_delete_template
 client = Mysql2::Client.new(mysql_config)
 client.query("DROP DATABASE IF EXISTS `#{SOURCE_DB}`")
 client.query("CREATE DATABASE `#{SOURCE_DB}`")
@@ -100,6 +102,11 @@ begin
     fail_with("profile was not indexed as a nested object: #{body.dig('_source', 'profile').inspect}", LOG_PATH)
   end
   step "  JSON OK"
+
+  # --- 4c. The index template is installed and applied to the new index ----
+  step "asserting index template #{TEMPLATE_NAME} (#{template_path})"
+  assert_template_applied(INDEX, LOG_PATH)
+  step "  TEMPLATE OK"
 
   # --- 5. hash_tables state is persisted ------------------------------------
   step "asserting hash_tables persistence"

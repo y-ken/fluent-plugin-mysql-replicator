@@ -4,7 +4,8 @@
 # It seeds a source table in MySQL, boots a real Fluentd process wiring
 # in_mysql_replicator -> out_mysql_replicator_elasticsearch (fluent_single.conf),
 # and asserts that INSERT / UPDATE / DELETE on MySQL are replicated to
-# Elasticsearch.
+# Elasticsearch. It also checks that the plugin installs the index template and
+# that the new index gets the template's setting.
 require_relative 'e2e_helper'
 include E2E
 
@@ -18,6 +19,7 @@ TYPE  = 'mytype'
 # --- 1. Seed the source database --------------------------------------------
 step "seeding MySQL source database '#{DB}'"
 es_delete_index(INDEX)
+es_delete_template
 client = Mysql2::Client.new(mysql_config)
 client.query("DROP DATABASE IF EXISTS `#{DB}`")
 client.query("CREATE DATABASE `#{DB}`")
@@ -65,6 +67,11 @@ begin
     fail_with("profile was not indexed as a nested object: #{body.dig('_source', 'profile').inspect}", LOG_PATH)
   end
   step "  JSON OK"
+
+  # --- 3c. The index template is installed and applied to the new index ----
+  step "asserting index template #{TEMPLATE_NAME} (#{template_path})"
+  assert_template_applied(INDEX, LOG_PATH)
+  step "  TEMPLATE OK"
 
   # --- 4. UPDATE is replicated ----------------------------------------------
   step "asserting UPDATE replication"

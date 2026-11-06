@@ -1,0 +1,8 @@
+{
+  "index_patterns": ["myindex", "multiindex"],
+  "template": {
+    "settings": {
+      "index.number_of_replicas": 0
+    }
+  }
+}

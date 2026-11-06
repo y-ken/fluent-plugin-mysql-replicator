@@ -39,14 +39,19 @@ jobs:
       matrix:
         include:
           # The plugin auto-detects the version and adjusts "_type" accordingly.
+          # 7.x drops "_type" and adds composable index templates (7.8), so the E2E
+          # configs install the legacy template on 6.x and the composable one on 7.17+.
           - es_label: '6.8'
             es_image: docker.elastic.co/elasticsearch/elasticsearch:6.8.23
             es_major: '6'
-          - es_label: '8.x'
-            es_image: docker.elastic.co/elasticsearch/elasticsearch:8.18.0
+          - es_label: '7.17'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:7.17.29
+            es_major: '7'
+          - es_label: '8.19'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:8.19.24
             es_major: '8'
-          - es_label: '9.x'
-            es_image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+          - es_label: '9.5'
+            es_image: docker.elastic.co/elasticsearch/elasticsearch:9.5.6
             es_major: '9'
 
     services:
