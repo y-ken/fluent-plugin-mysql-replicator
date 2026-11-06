@@ -50,9 +50,10 @@ module Fluent::Plugin
         @manager_db = get_manager_connection
         @manager_db.query("SET SESSION wait_timeout=1800;")
         @running = true
+        # Set up before any thread starts, as a poller can add to the buffer before the flusher thread runs.
+        @hash_table_bulk_insert = []
+        @hash_table_bulk_insert_last_time = Time.now
         @threads << thread_create(:in_mysql_replicator_flusher) {
-          @hash_table_bulk_insert = []
-          @hash_table_bulk_insert_last_time = Time.now
           hash_table_flusher
         }
         get_settings.each_with_index do |config, idx|
