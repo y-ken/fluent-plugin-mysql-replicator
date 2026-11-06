@@ -211,7 +211,7 @@ How a value is put into the sub-query depends on where its placeholder is:
   columns whose values you control. A placeholder in a comment (`/* */`, `-- ` or
   `#`) is put in as it is too, and a quote in a comment does not start a string.
 
-Before 1.4.1, the values were put in as they were, even inside quotes. If a query
+Before 1.4.2, the values were put in as they were, even inside quotes. If a query
 escapes a value itself so that it can be quoted, such as
 `REPLACE(name, '''', '''''') AS name_q` for `'${name_q}'`, remove that escape when
 you upgrade: the value would be escaped twice and match nothing, and the rows would
