@@ -95,9 +95,11 @@ module Fluent::Plugin
         }
         primary_key = config['primary_key']
         json_columns = (config['json_columns'] || '').split(',').map(&:strip).reject(&:empty?)
-        previous_id = current_id = nil
         while @running
-          previous_id_at_start = previous_id
+          # Each poll compares its rows with each other and with hash_tables only. A previous_id carried over from the
+          # last row of the previous poll hid the deletes before the first row, and after a failed poll it made the
+          # rows after the failure look deleted.
+          previous_id = current_id = nil
           rows_count = 0
           skipped_count = 0
           failed_nested_queries = Hash.new(0)
@@ -156,13 +158,11 @@ module Fluent::Plugin
               previous_id = current_id
               rows_count += 1
             end
+            # The rows after the last one. Not on an empty result, which is not taken as "every row was deleted".
+            @mutex.synchronize { detect_delete(config, nil, previous_id) } unless previous_id.nil?
           rescue PreparedSessionLost => e
-            # The rest of the poll is skipped, as when prepared_query fails. The next poll does not compare its first row
-            # with the last row seen here, which would make the rows after it look deleted. If this poll had rows, its
-            # first row already did that comparison with the poll before, and the rows that it added to hash_tables would
-            # look deleted if it were done again, so the next poll does not compare its first row at all; rows deleted
-            # at the end are found at the end of the next poll.
-            previous_id = rows_count.zero? ? previous_id_at_start : nil
+            # The rest of the poll is skipped, as when prepared_query fails: no deletes after the last row seen. The next
+            # poll starts its comparison again from its own first row.
             db.close if db
             nest_db.close
             @mutex.synchronize {
@@ -245,8 +245,11 @@ module Fluent::Plugin
       return row.nil? ? "" : row['setting_query_hash']
     end
 
+    # Detects the rows deleted between previous_id and current_id, the rows of hash_tables before the first row when
+    # previous_id is nil, and those after the last row when current_id is nil. The query must return its rows in
+    # ascending order of the primary key.
     def detect_delete(config, current_id, previous_id)
-      return if config['enable_delete'] != 1 || previous_id.nil?
+      return if config['enable_delete'] != 1
       deleted_ids = collect_gap_ids(config, current_id, previous_id)
       unless deleted_ids.empty?
         event = :delete
@@ -260,20 +263,20 @@ module Fluent::Plugin
 
     def collect_gap_ids(config, current_id, previous_id)
       setting_name = config['name']
-      if (current_id - previous_id) > 1 && config['enable_loose_delete'] == 0
+      if previous_id.nil?
+        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
+          WHERE setting_name = '#{setting_name}'
+          AND setting_query_pk < #{current_id.to_i}"
+      elsif current_id.nil?
+        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
+          WHERE setting_name = '#{setting_name}'
+          AND setting_query_pk > #{previous_id.to_i}"
+      elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 0
         query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
           WHERE setting_name = '#{setting_name}'
           AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
       elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 1
         return [*previous_id...current_id] - [current_id,previous_id]
-      elsif previous_id > current_id
-        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}'
-          AND setting_query_pk > #{previous_id.to_i}"
-      elsif previous_id == current_id
-        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}'
-          AND (setting_query_pk > #{current_id.to_i} OR setting_query_pk < #{current_id.to_i})"
       end
       ids = Array.new
       unless query.nil?
