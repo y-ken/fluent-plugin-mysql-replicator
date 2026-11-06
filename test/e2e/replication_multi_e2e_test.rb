@@ -11,9 +11,9 @@
 # that INSERT / UPDATE / DELETE propagate to Elasticsearch AND that the
 # hash_tables state is maintained.
 #
-# Delete detection in the multi plugin is gap-based against hash_tables, so the
-# test seeds three rows and deletes the *middle* one (id=2), then the *first*
-# one (id=1), to exercise it.
+# The multi plugin detects deletes by comparing the ids of each poll with
+# hash_tables. The test seeds three rows and deletes the *middle* one (id=2),
+# then the *first* one (id=1), to exercise it.
 require_relative 'e2e_helper'
 include E2E
 
@@ -135,8 +135,8 @@ begin
   step "  DELETE OK"
 
   # --- 8. DELETE of the first row (id=1) is replicated ------------------------
-  # The first row of a poll is compared with the rows of hash_tables before it.
-  # Two rows must remain after it: with one, it is also the last row.
+  # Versions before 1.5.0 did not delete a row before the first row of the
+  # result. Two rows remain after it, so that it is not also the last row.
   step "asserting DELETE replication (first id=1)"
   client.query("INSERT INTO `#{SOURCE_DB}`.users (id, name, age) VALUES (4, 'dave', 50)")
   wait_until("user 4 recorded in hash_tables", log_path: LOG_PATH) do

@@ -2,8 +2,11 @@
 
 Useful to replicate millions of records and/or multiple tables with multiple
 threads. This variant stores the comparison hash table in a MySQL management
-table instead of Ruby memory, so its memory footprint stays small (on the order
-of ~20MB even for a 300 million row table).
+table instead of Ruby memory, so its memory footprint stays small. With
+`enable_delete`, a poll keeps the primary keys it returned until its end, as
+ranges of consecutive ids: 16 bytes for each gap between the ids for a query
+that returns its rows in ascending order of the primary key, and 8 to 16 bytes
+for each row otherwise (see "how deletes are detected" below).
 
 ### prepare
 
@@ -56,15 +59,39 @@ The optional columns have sensible defaults:
   objects (see the [README](README.md#json-column-support)).
 * `enable_retry` (default `1`) / `retry_interval` (default `30`) — keep retrying
   when the source database is temporarily unavailable, instead of stopping.
-* `enable_loose_insert` / `enable_loose_delete` — speed/accuracy trade-offs for
-  insert/delete detection.
+* `enable_loose_insert` — a speed/accuracy trade-off for insert detection: every
+  row is sent as an insert on every poll, without reading its hash.
+* `enable_loose_delete` — has no effect since 1.5.0 (see below).
 
 ##### how deletes are detected
 
 With `enable_delete` set, a row that is in `hash_tables` but no longer in the
 result of `query` is sent as deleted, and removed from `hash_tables`. This is
-what `mysql_replicator` does too. A poll whose query returns no row deletes
-nothing, and a poll that fails deletes nothing after the row where it failed.
+what `mysql_replicator` does too. At the end of each poll, one query reads the ids
+of the setting in `hash_tables` and compares them with the ids that the poll
+returned. So the rows can come in any order, and `query` needs no `ORDER BY`.
+
+The ids of the poll are kept in memory until then, as ranges of consecutive ids.
+For a query that returns its rows in ascending order of `primary_key`, such as an
+AUTO_INCREMENT key with `ORDER BY id`, they take 16 bytes for each gap between
+the ids, so a table with few deleted rows takes little memory even with many rows.
+Rows in another order take 8 bytes each, and twice that while they are sorted at
+the end of the poll (800 MB, then 1.6 GB for a moment, for 100 million rows), so
+add `ORDER BY` on the primary key to a large table.
+
+The ids of `hash_tables` are read with the index on
+`(setting_name, setting_query_pk)` that `setup_mysql_replicator_multi.sql` creates
+since 1.5.0. Without it, the query reads the whole index of `hash_tables`, for all
+the settings, on each poll.
+
+A poll whose query returns no row deletes nothing. A poll that fails in the middle
+(with `enable_retry`) deletes nothing after the last row it got: when its rows
+came in ascending order of `primary_key`, the rows of `hash_tables` up to that row
+that the poll did not return are still deleted, and otherwise nothing is.
+
+`enable_loose_delete` used to send the ids in each gap between two rows as
+deleted, without reading `hash_tables`. It has no effect since 1.5.0, as the
+single query above finds the deletes.
 
 The result of `query` decides, not the table: a row that leaves the result is
 deleted downstream even when it is still in the table. So for a query whose
@@ -74,11 +101,16 @@ sent as deleted. To keep such rows downstream, set `enable_delete` to `0`.
 
 > Upgrading from 1.4.x: versions before 1.5.0 did not look at the rows of
 > `hash_tables` before the first row of the result. On the first poll after the
-> upgrade, the rows of `hash_tables` that are before the first row of the result,
-> for example rows that left the range of a query like the ones above, are sent as
-> deleted at once, and removed from `hash_tables`, so they cannot be restored by
-> the plugin. If you want to keep them, set `enable_delete` to `0` before you
-> upgrade.
+> upgrade, every row of `hash_tables` that is not in the result, for example rows
+> that left the range of a query like the ones above, is sent as deleted at once,
+> and removed from `hash_tables`, so it cannot be restored by the plugin. If you
+> want to keep them, set `enable_delete` to `0` before you upgrade.
+>
+> Add the index of 1.5.0 to an existing `hash_tables` before you upgrade:
+>
+> ```
+> ALTER TABLE hash_tables ADD KEY setting_name (setting_name, setting_query_pk);
+> ```
 
 ### configuration
 

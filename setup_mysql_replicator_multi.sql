@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS `hash_tables` (
   `setting_query_pk` int(11) NOT NULL,
   `setting_query_hash` varchar(255) NOT NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `setting_query_pk` (`setting_query_pk`,`setting_name`)
+  UNIQUE KEY `setting_query_pk` (`setting_query_pk`,`setting_name`),
+  -- Used to read the ids of a setting at the end of each poll (since 1.5.0).
+  KEY `setting_name` (`setting_name`,`setting_query_pk`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
 CREATE TABLE IF NOT EXISTS `settings` (
@@ -30,7 +32,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `enable_delete` int(11) DEFAULT '1',
   -- On enabling 'enable_loose_insert: 1', make it faster synchronization to skip checking hash_tables.
   `enable_loose_insert` int(11) DEFAULT '0',
-  -- On enabling 'enable_loose_delete: 1', turn on speculative delete but performance penalty on non-contiguous primary key.
+  -- 'enable_loose_delete' has no effect since 1.5.0: deletes are found with one query on hash_tables for each poll.
   `enable_loose_delete` int(11) DEFAULT '0',
   -- On enabling 'enable_retry: 1', automatically retries when an error occurs due to MySQL.
   `enable_retry` int(11) DEFAULT '1',

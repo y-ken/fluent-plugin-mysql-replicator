@@ -14,7 +14,7 @@ class FakeMysqlClient
     @unread = nil
   end
 
-  def query(sql)
+  def query(sql, _options = {})
     raise Mysql2::Error, 'MySQL client is not connected' if @closed
     raise Mysql2::Error, "Commands out of sync; you can't run this command now" if @unread
     raise Mysql2::Error, 'Query was empty' if sql.strip.empty?
@@ -85,9 +85,9 @@ class FakeHashTables
     when /\ASELECT SQL_NO_CACHE setting_query_hash FROM hash_tables WHERE setting_query_pk = (-?\d+) AND setting_name = '([^']*)'\z/
       hash = @rows[[$2, $1.to_i]]
       hash ? [{'setting_query_hash' => hash}] : []
-    when /\ASELECT SQL_NO_CACHE setting_query_pk FROM hash_tables WHERE setting_name = '([^']*)' AND (.+)\z/
-      name, condition = $1, $2
-      comparisons = condition.scan(/setting_query_pk ([<>]) (-?\d+)/).map {|op, n| [op, n.to_i] }
+    when /\ASELECT SQL_NO_CACHE setting_query_pk FROM hash_tables WHERE setting_name = '([^']*)'(?: AND (.+))?\z/
+      name, condition = $1, $2.to_s
+      comparisons = condition.scan(/setting_query_pk ([<>]=?) (-?\d+)/).map {|op, n| [op, n.to_i] }
       combine = condition.include?(' OR ') ? :any? : :all?
       @rows.keys.select {|s, pk| s == name && comparisons.public_send(combine) {|op, n| pk.public_send(op, n) } }
            .map(&:last).sort.map {|pk| {'setting_query_pk' => pk} }

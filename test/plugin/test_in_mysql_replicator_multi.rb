@@ -53,10 +53,11 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   # Runs poll(config) for one poll per table, and returns the events of each poll as [tag, record]. A table is the
   # rows of the query, or a Proc that returns them. The sleep after each poll moves on to the next table, and
   # hash_tables is a FakeHashTables that is written at once (bulk_insert_count 1).
-  def run_polls(config, *tables, origin: nil)
-    hash_tables = FakeHashTables.new
+  def run_polls(config, *tables, origin: nil, hash_tables: FakeHashTables.new)
     instance, manager = instance_with_manager(CONFIG + "bulk_insert_count 1\n") {|sql| hash_tables.call(sql) }
     instance.instance_variable_set(:@manager_db, manager)
+    # The deletes are read on a connection of their own.
+    instance.define_singleton_method(:get_manager_connection) { FakeMysqlClient.new {|sql| hash_tables.call(sql) } }
     instance.instance_variable_set(:@mutex, Mutex.new)
     instance.instance_variable_set(:@running, true)
     instance.instance_variable_set(:@hash_table_bulk_insert, [])
@@ -132,6 +133,84 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   def test_duplicate_primary_keys_do_not_delete_the_other_rows
     _, second = run_polls(setting, users(1, 2, 3), users(1, 2, 2, 3))
     assert_equal([], second)
+  end
+
+  # Deletes were found from the gaps between consecutive rows, which needed the rows in ascending order of the
+  # primary key. With rows in another order, rows that are still there were sent as deleted, and inserted again later
+  # in the same poll. Deletes are now the ids of hash_tables that the poll did not return.
+  def test_rows_out_of_order_are_not_deleted_and_a_deleted_row_is
+    unordered = setting('query' => 'SELECT id, name FROM users')
+    _, second, third, fourth = run_polls(unordered, users(1, 2, 3, 4, 5), users(1, 5, 3, 4, 2), users(4, 1, 5, 3), users(4, 1, 5, 3))
+    assert_equal([], second)
+    assert_equal([['replicator.users.delete.id', {'id' => 2}]], third)
+    assert_equal([], fourth)
+    assert_empty(logs('warn'))
+  end
+
+  # With enable_retry, a poll that fails after some rows must not delete the rows after them. When the rows came in
+  # ascending order, the deletes before the failure are still sent, so that a setting that fails at the same row on
+  # every poll still replicates them.
+  def test_poll_that_fails_in_the_middle_sends_the_deletes_before_the_failure
+    failing = -> { Enumerator.new {|y| users(1, 3).each {|row| y << row }; raise Mysql2::Error, 'Lost connection to MySQL server during query' } }
+    _, second = run_polls(setting('enable_retry' => 1), users(1, 2, 3, 4, 5), failing)
+    assert_equal([2], deletes(second))
+  end
+
+  # Rows that are not in order give no bound for the rows not seen yet, so a failed poll deletes nothing.
+  def test_poll_with_rows_out_of_order_that_fails_deletes_nothing
+    failing = -> { Enumerator.new {|y| users(3, 1).each {|row| y << row }; raise Mysql2::Error, 'Lost connection to MySQL server during query' } }
+    _, second = run_polls(setting('enable_retry' => 1), users(1, 2, 3, 4, 5), failing)
+    assert_equal([], second)
+  end
+
+  # One query on hash_tables for each poll finds the deletes, however sparse the ids are. The gaps between
+  # consecutive ids each sent a query before.
+  def test_deletes_are_found_with_one_query_for_each_poll
+    hash_tables = FakeHashTables.new
+    queries = []
+    hash_tables.define_singleton_method(:call) do |sql|
+      queries << sql if sql.include?('SELECT SQL_NO_CACHE setting_query_pk')
+      super(sql)
+    end
+    _, second = run_polls(setting, users(1, 10, 20, 30, 40), users(1, 10, 30, 40), hash_tables: hash_tables)
+    assert_equal([20], deletes(second))
+    assert_equal(2, queries.size)
+  end
+
+  # enable_loose_delete sent the ids in each gap between consecutive rows as deleted, without looking at hash_tables,
+  # including ids that never existed, on every poll. One query on hash_tables now finds the deletes, so it has no
+  # effect.
+  def test_loose_delete_sends_no_ids_that_are_not_in_hash_tables
+    _, second = run_polls(setting('enable_loose_delete' => 1), users(1, 5), users(1, 5))
+    assert_equal([], second)
+  end
+
+  # The ids of a poll are kept as ranges of consecutive ids, in any order, with duplicates.
+  def test_seen_ids
+    seen = Fluent::Plugin::MysqlReplicatorMultiInput::SeenIds.new
+    [5, 6, 7, 7, 10, 2, 3, 4, 20, 1, 6, 15].each {|id| seen << id }
+    seen.finish
+    assert_equal([1, 2, 3, 4, 5, 6, 7, 10, 15, 20], (0..21).select {|id| seen.include?(id) })
+    ascending = Fluent::Plugin::MysqlReplicatorMultiInput::SeenIds.new
+    (1..1000).each {|id| ascending << id }
+    ascending << 2000
+    assert_equal([[1, 2000], [1000, 2000], []], %i[@starts @ends @others].map {|name| ascending.instance_variable_get(name) })
+  end
+
+  # A failure of the manager database while the deletes are found or written must not stop the poller.
+  def test_failure_to_write_the_deletes_does_not_stop_polling
+    hash_tables = FakeHashTables.new
+    failing = false
+    hash_tables.define_singleton_method(:call) do |sql|
+      raise Mysql2::Error, 'Lost connection to MySQL server during query' if failing && sql.start_with?('DELETE')
+      super(sql)
+    end
+    second = -> { failing = true; users(1, 3) }
+    third = -> { failing = false; users(1, 3) }
+    polls = run_polls(setting, users(1, 2, 3), second, third, hash_tables: hash_tables)
+    assert_equal([[2], [2]], polls[1..2].map {|events| deletes(events) })
+    assert_false(hash_tables.rows.has_key?(['users', 2]))
+    assert_equal(1, logs('error').grep(/failed to detect or remove the deleted rows/).size)
   end
 
   # A LEFT JOIN, for example, can give a row whose primary key is NULL. It is skipped, and the rows around it are
@@ -335,7 +414,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     test = self
     instance.define_singleton_method(:emit_record) {|tag, record| polls.last << [tag, record] }
     instance.define_singleton_method(:update_hashtable) {|_opts| }
-    instance.define_singleton_method(:detect_delete) {|*_args| }
+    instance.define_singleton_method(:emit_deletes_safely) {|*_args| }
     instance.define_singleton_method(:get_origin_connection) do |_config, reconnect = true|
       failure = failures[polls.size - 1]
       client = FakeMysqlClient.new do |sql|
@@ -376,7 +455,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   end
 
   # The connection of prepared_query lost in the middle of a poll, which does not connect again: the rest of the poll is
-  # skipped with one line, whether enable_retry is set or not, without the deletes after the last row seen.
+  # skipped with one line, whether enable_retry is set or not, without deletes.
   def test_lost_connection_of_prepared_query_skips_the_rest_of_the_poll
     instance = create_driver.instance
     config = {
@@ -391,7 +470,7 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     clients = []
     instance.define_singleton_method(:emit_record) {|tag, record| polls.last << record['id'] }
     instance.define_singleton_method(:update_hashtable) {|_opts| }
-    instance.define_singleton_method(:detect_delete) {|_config, current_id, previous_id| compared << [current_id, previous_id] }
+    instance.define_singleton_method(:emit_deletes_safely) {|_config, seen_ids, _upto = nil| compared << (1..3).count {|id| seen_ids.include?(id) } }
     instance.define_singleton_method(:get_origin_connection) do |_config, _reconnect = true|
       poll = polls.size
       client = FakeMysqlClient.new do |sql|
@@ -415,8 +494,8 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     @polled_instance = instance
     Timeout.timeout(10) { instance.poll(config) }
     assert_equal([[1, 2, 3], [1], [1, 2, 3]], polls)
-    # Each poll compares from its own first row; the skipped one has no deletes after the last row seen.
-    assert_equal([[1, nil], [2, 1], [3, 2], [nil, 3], [1, nil], [1, nil], [2, 1], [3, 2], [nil, 3]], compared)
+    # The deletes of the first and the third poll, and none of the skipped one.
+    assert_equal([3, 3], compared)
     logs = @polled_instance.log.out.logs.grep(/\[(warn|error)\]/)
     assert_equal(1, logs.size, logs.inspect)
     assert_match(/\[error\]: mysql_replicator_multi: lost the connection of prepared_query; skipped the rest of this poll\. :setting_name=>users :errno=>2013 :sql_state=>HY000$/, logs.first)
