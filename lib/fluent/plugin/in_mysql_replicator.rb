@@ -2,12 +2,14 @@ require 'mysql2'
 require 'digest/sha1'
 require 'json'
 require 'fluent/plugin/input'
+require_relative 'mysql_replicator_nested_query'
 
 module Fluent::Plugin
   class MysqlReplicatorInput < Fluent::Plugin::Input
     Fluent::Plugin.register_input('mysql_replicator', self)
 
     helpers :thread
+    include MysqlReplicatorNestedQuery
 
     # prepared_query failed, or its connection could not be opened. It holds only the error number and the SQLSTATE: the
     # message of MySQL can hold values of the rows.
@@ -84,6 +86,7 @@ module Fluent::Plugin
     def poll_once
       rows_count = 0
       skipped_count = 0
+      failed_nested_queries = Hash.new(0)
       start_time = Time.now
       previous_ids = @ids
       current_ids = Array.new
@@ -91,7 +94,6 @@ module Fluent::Plugin
       baseline = @table_hash.dup unless @prepared_query.nil?
       # The nested queries run on this connection, so that they see the session that prepared_query sets up. It is a
       # new session for each poll, as a session cannot create the same temporary table twice.
-      open_nested = @prepared_query.nil? ? method(:get_connection) : method(:open_prepared_connection)
       @prepared_con = open_prepared_connection if !@prepared_query.nil?
       rows, @con = query(@query, @con)
       rows.each do |row|
@@ -105,13 +107,20 @@ module Fluent::Plugin
         current_ids << id
         row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
         parse_json_columns!(row, @json_columns)
-        row.select {|k, v| nested_query_value?(v) }.each do |k, v|
-          row[k] = [] unless row[k].is_a?(Array)
-          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con, &open_nested)
-          nest_rows.each do |nest_row|
-            nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-            row[k] << nest_row
+        begin
+          row.select {|k, v| nested_query_value?(v) }.each do |k, v|
+            row[k] = [] unless row[k].is_a?(Array)
+            run_nested_query(k, v, row).each do |nest_row|
+              nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+              row[k] << nest_row
+            end
           end
+        rescue MysqlReplicatorNestedQuery::SqlError => e
+          # The row is held back for this poll: it is not sent, and its id and hash are kept, so that it is not taken
+          # as deleted, and it is sent once its nested query works. Sending it without the rows of the nested query
+          # would overwrite them downstream.
+          failed_nested_queries[e.message] += 1
+          next
         end
         current_hash = row_hash(row)
         if !@table_hash.include?(id)
@@ -126,6 +135,10 @@ module Fluent::Plugin
       end
       if skipped_count > 0
         log.error "mysql_replicator: skipped #{skipped_count} rows without the primary key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')}"
+      end
+      # One line for each poll, without the values of the rows: the message of MySQL quotes the query, which has them.
+      failed_nested_queries.each do |message, count|
+        log.error "mysql_replicator: held back #{count} rows in this poll, as #{message}. :tag=>#{tag}"
       end
       # An empty result does not delete every row (see detect_deleted_ids). Keep the previous ids as the baseline, so
       # that the rows that do not come back are deleted when the query returns rows again.
@@ -160,9 +173,32 @@ module Fluent::Plugin
       Digest::SHA1.hexdigest(Marshal.dump(row))
     end
 
-    # Replaces each ${column} in a nested query with the value of that column in the row.
-    def expand_placeholders(query, row)
-      query.gsub(/\$\{([^\}]+)\}/) { row[$1].to_s }
+    # Runs the nested query of a column for a row on @prepared_con, which has the session of prepared_query, and returns
+    # its rows. The values are escaped on the same connection, so that they follow its character set and sql_mode
+    # (prepared_query can set NO_BACKSLASH_ESCAPES). A connection that is lost is closed and opened again with
+    # prepared_query. A connection error is retried, like the main query. An error in the SQL, such as a syntax error
+    # or an unknown column, would fail the same way on every try, so it raises SqlError.
+    def run_nested_query(column, template, row)
+      reopened = false
+      begin
+        if @prepared_con.nil? || !@prepared_con.ping
+          @prepared_con.close if @prepared_con
+          @prepared_con = @prepared_query.nil? ? get_connection : open_prepared_connection
+        end
+        @prepared_con.query(expand_nested_query(template, row, @prepared_con)).to_a
+      rescue PreparedQueryError
+        raise
+      rescue Exception => e
+        raise MysqlReplicatorNestedQuery::SqlError.new(column, e) if sql_error?(e)
+        # As in query(): a connection that was lost is opened again at once the first time.
+        if !reopened && @prepared_con && !@prepared_con.ping
+          reopened = true
+          retry
+        end
+        log.warn "mysql_replicator: #{e}"
+        sleep @interval
+        retry
+      end
     end
 
     # Opens a connection and runs the statements of prepared_query on it. The results of a statement, such as a SELECT

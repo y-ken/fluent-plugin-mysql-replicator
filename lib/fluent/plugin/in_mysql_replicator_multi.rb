@@ -1,10 +1,12 @@
 require 'fluent/plugin/input'
+require_relative 'mysql_replicator_nested_query'
 
 module Fluent::Plugin
   class MysqlReplicatorMultiInput < Fluent::Plugin::Input
     Fluent::Plugin.register_input('mysql_replicator_multi', self)
 
     helpers :thread
+    include MysqlReplicatorNestedQuery
 
     # The connection of prepared_query was lost in the middle of a poll. It holds only the error number and the SQLSTATE:
     # the message of MySQL can hold values of the rows.
@@ -98,6 +100,7 @@ module Fluent::Plugin
           previous_id_at_start = previous_id
           rows_count = 0
           skipped_count = 0
+          failed_nested_queries = Hash.new(0)
           start_time = Time.now
           db = nil
           nest_db = nil
@@ -129,16 +132,25 @@ module Fluent::Plugin
               end
               row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
               parse_json_columns!(row, json_columns)
-              row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
-                row[k] = [] unless row[k].is_a?(Array)
-                nest_query(nest_db, config, v.gsub(/\$\{([^\}]+)\}/) {|matched| row[$1].to_s}).each do |nest_row|
-                  nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
-                  row[k] << nest_row
+              held_back = false
+              begin
+                row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
+                  row[k] = [] unless row[k].is_a?(Array)
+                  run_nested_query(nest_db, config, k, v, row).each do |nest_row|
+                    nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
+                    row[k] << nest_row
+                  end
                 end
+              rescue MysqlReplicatorNestedQuery::SqlError => e
+                # The row is held back for this poll: it is not sent and hash_tables keeps its hash, but it still counts
+                # as a row of this poll, so that it is not taken as deleted. It is sent once its nested query works.
+                # Sending it without the rows of the nested query would overwrite them downstream.
+                failed_nested_queries[e.message] += 1
+                held_back = true
               end
               current_id = row[primary_key]
               @mutex.synchronize {
-                detect_insert_update(config, row)
+                detect_insert_update(config, row) unless held_back
                 detect_delete(config, current_id, previous_id)
               }
               previous_id = current_id
@@ -176,6 +188,12 @@ module Fluent::Plugin
               log.error "mysql_replicator_multi: skipped #{skipped_count} rows without the primary key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
             }
           end
+          # One line for each poll, without the values of the rows: the message of MySQL quotes the query, which has them.
+          failed_nested_queries.each do |message, count|
+            @mutex.synchronize {
+              log.error "mysql_replicator_multi: held back #{count} rows in this poll, as #{message}. :setting_name=>#{config['name']}"
+            }
+          end
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
             log.info "mysql_replicator_multi: execution finished. :setting_name=>#{config['name']} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
@@ -189,6 +207,17 @@ module Fluent::Plugin
           log.error e.backtrace.join("\n")
         }
       end
+    end
+
+    # Runs the nested query of a column for a row on nest_db, which has the session of prepared_query, and returns its
+    # rows. The values are escaped on the same connection. An error in the SQL, such as a syntax error or an unknown
+    # column, would fail the same way on every poll, so it raises SqlError. A lost connection of prepared_query raises
+    # PreparedSessionLost (see nest_query). Other errors fail the poll as before (and it is tried again with enable_retry).
+    def run_nested_query(nest_db, config, column, template, row)
+      nest_query(nest_db, config, expand_nested_query(template, row, nest_db))
+    rescue Mysql2::Error => e
+      raise unless sql_error?(e)
+      raise MysqlReplicatorNestedQuery::SqlError.new(column, e)
     end
 
     def detect_insert_update(config, row)
