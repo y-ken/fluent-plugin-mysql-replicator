@@ -5,6 +5,88 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-11-09
+
+### Fixed
+- Elasticsearch output: it could not be loaded on Fluentd 1.20.1, which no
+  longer bundles yajl-ruby (`cannot load such file -- yajl`). It now uses the
+  `json` library that comes with Ruby instead of yajl-ruby, so no gem needs to be
+  installed for it. ([#61])
+  - Strings that are not valid UTF-8, such as values of `BLOB` or `BINARY`
+    columns, are written with U+FFFD in place of the invalid bytes, the same way
+    on json 2.x and 3.x, and one warning per chunk gives the number of values
+    replaced (not the values). With yajl, the bytes were sent as they were, and
+    Elasticsearch rejected the document.
+  - A row whose primary key is not valid UTF-8, such as a `BINARY(16)` key from
+    `UUID_TO_BIN(UUID())`, is skipped, for an index and for a delete, and one
+    warning per chunk gives the number of rows and the indices, as replacing its
+    bytes would give different rows the same `_id`. The other rows of the chunk
+    are written. With yajl, Elasticsearch rejected the whole bulk request for
+    most such keys, so the other rows were not written either.
+- Solr output: every write failed on Ruby 3.0 and later. Building the core URL
+  raised `NoMethodError` (`URI.escape` was removed in Ruby 3.0), and so did the
+  commit at the end of the write, so the chunk was retried and never committed.
+  ([#62])
+- Elasticsearch and Solr outputs: a chunk with a record whose tag does not match
+  `tag_format` now fails with `Fluent::UnrecoverableError` and a message that
+  names the tags (up to ten, with their counts), `tag_format` and the number of
+  records, instead of `NoMethodError` (`undefined method '[]' for nil`). As
+  before, Fluentd moves the whole chunk at once, without retrying it, to the
+  backup directory or to `<secondary>`: the records of the chunk whose tag
+  matches are not written either. ([#63])
+- Elasticsearch output: the version detection and the index template install are
+  tried again after a failure that can go away. Before, one failed `GET /` on the
+  first write, for example while Elasticsearch was starting, made the output send
+  `_type` until a restart, which Elasticsearch 8 and 9 reject, so no chunk was
+  written to them; and a template install that failed once was never tried again, so new
+  indices got dynamic mapping. ([#64])
+  - When `GET /` or a request to the template API fails with a connection error,
+    a 429 or a 5xx, the write logs a warning and fails without sending the bulk
+    request, and Fluentd retries the chunk, which tries the version and the
+    template again. So `_type` is not guessed, and no index is created with
+    dynamic mapping before the template is in.
+  - While only the template API keeps failing this way, no bulk request is sent
+    at all, where 1.4.0 went on writing without the template. The chunks wait in
+    the buffer: with a memory buffer (the default of this output) and no
+    `<secondary>`, Fluentd drops the chunks in the buffer queue when the retry
+    limit is reached, and with `retry_forever` they stay queued and new input can
+    fill the buffer.
+  - Any other failure, such as 403 on `GET /` for a user without the `monitor`
+    privilege, 400 for a broken template or a `template_file` that cannot be
+    read, is logged once as an error and not tried again until a restart, and
+    the bulk request is sent, as before: with `_type` (assuming 6.x) when the
+    version is unknown, and without the template.
+  - The tags are checked before any request to Elasticsearch, so a chunk with a
+    tag that does not match `tag_format` still goes to the backup at once while
+    `GET /` or the template API fails.
+  - With `flush_thread_count` 2 or more, the version is detected and the template
+    installed once, and the other flushes wait for them before they send their
+    bulk requests.
+- Elasticsearch output: documents that failed in a bulk request were dropped
+  without a log. Elasticsearch answers 200 with `"errors": true` when some
+  documents fail, for example on a mapping error. The output now logs one error
+  per such request, with the number of failed documents and, for up to five of
+  them, the index, the status and the error type. The `_id` and the reason of the
+  error are not logged, as they can contain values of the row. A delete that
+  answers 404 is not counted. The failed documents are still not retried, and a
+  response that cannot be read gives one warning, without failing the write.
+  ([#65])
+
+  ```
+  mysql_replicator_elasticsearch: 1 of 2 documents failed in a bulk request: index=users status=400 type=document_parsing_exception
+  ```
+
+### Documentation
+- The README has a new section, "A tag that does not match `tag_format`", on the
+  log and on where the chunk goes. ([#63]) It also says what happens when the
+  version detection or the template install fails, and that the template is
+  installed on the first write, not on startup.
+
+### CI
+- The install-smoke jobs load the output plugins too, so that a library that
+  Fluentd stops bundling is caught, and the unit tests also run with json 2.21.x
+  on Ruby 3.4. ([#61])
+
 ## [1.4.0] - 2026-06-17
 
 ### Added
@@ -104,6 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - First 1.0 release, targeting the Fluentd v0.14+ plugin API. Earlier 0.x
   history is available in the git log.
 
+[1.4.1]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/y-ken/fluent-plugin-mysql-replicator/compare/v1.1.0...v1.2.0
@@ -125,3 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#43]: https://github.com/y-ken/fluent-plugin-mysql-replicator/issues/43
 [#45]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/45
 [#48]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/48
+[#61]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/61
+[#62]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/62
+[#63]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/63
+[#64]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/64
+[#65]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/65
