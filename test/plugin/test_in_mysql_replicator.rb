@@ -351,6 +351,41 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
     assert_equal([], second)
   end
 
+  def test_change_between_null_and_empty_string_is_an_update
+    conf = %[
+      tag   input.mysql.${event}.${primary_key}
+      query SELECT id, note FROM t
+    ]
+    _, second = poll_tables(conf, [{'id' => 1, 'note' => nil}], [{'id' => 1, 'note' => ''}])
+    assert_equal([['input.mysql.update.id', {'id' => 1, 'note' => ''}]], second)
+  end
+
+  # The values were joined without a separator, so "xb" + "" and "x" + "b" looked the same.
+  def test_change_that_moves_characters_between_columns_is_an_update
+    conf = %[
+      tag   input.mysql.${event}.${primary_key}
+      query SELECT id, a, b FROM t
+    ]
+    _, second = poll_tables(conf, [{'id' => 1, 'a' => 'xb', 'b' => ''}], [{'id' => 1, 'a' => 'x', 'b' => 'b'}])
+    assert_equal([['input.mysql.update.id', {'id' => 1, 'a' => 'x', 'b' => 'b'}]], second)
+  end
+
+  def test_change_in_the_rows_of_a_nested_query_is_an_update
+    names = ['a']
+    instance, events, _ = polling_instance(NESTED_CONFIG) do |sql|
+      if sql.include?('FROM parent')
+        [{'id' => 7, 'items' => 'SELECT name FROM item WHERE parent_id = ${id}'}]
+      else
+        names.map {|n| {'name' => n} }
+      end
+    end
+    poll_once(instance)
+    events.clear
+    names = ['a', 'b']
+    poll_once(instance)
+    assert_equal([['input.mysql.update.id', {'id' => 7, 'items' => [{'name' => 'a'}, {'name' => 'b'}]}]], events)
+  end
+
   def test_rows_after_a_null_primary_key_are_emitted
     rows = [{'id' => nil, 'name' => 'x'}, {'id' => 1, 'name' => 'a'}]
     first, = poll_tables(SIMPLE_CONFIG, rows)

@@ -103,7 +103,6 @@ module Fluent::Plugin
           next
         end
         current_ids << id
-        current_hash = Digest::SHA1.hexdigest(row.flatten.join)
         row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
         parse_json_columns!(row, @json_columns)
         row.select {|k, v| nested_query_value?(v) }.each do |k, v|
@@ -114,6 +113,7 @@ module Fluent::Plugin
             row[k] << nest_row
           end
         end
+        current_hash = row_hash(row)
         if !@table_hash.include?(id)
           tag = format_tag(@tag, {:event => :insert})
           emit_record(tag, row)
@@ -150,6 +150,12 @@ module Fluent::Plugin
       @con.close if @con
       @prepared_con.close if @prepared_con
       @prepared_con = nil
+    end
+
+    # The hash that tells whether a row changed. It is taken after the nested queries, so that a change in their rows is
+    # an update, and from Marshal, which tells nil from "" and keeps the column boundaries.
+    def row_hash(row)
+      Digest::SHA1.hexdigest(Marshal.dump(row))
     end
 
     # Replaces each ${column} in a nested query with the value of that column in the row.
