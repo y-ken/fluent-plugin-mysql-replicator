@@ -58,12 +58,11 @@ module E2E
     es_major_version < 7 ? "/_template/#{TEMPLATE_NAME}" : "/_index_template/#{TEMPLATE_NAME}"
   end
 
-  # Drop the template so that the plugin installs it again (ignores "not found").
+  # Drop the template so that the plugin installs it again. A template that does not exist yet answers 404.
   def es_delete_template
     uri = URI("#{es_base}#{template_path}")
-    Net::HTTP.start(uri.host, uri.port) { |h| h.request(Net::HTTP::Delete.new(uri)) }
-  rescue StandardError
-    # ignore: the template may not exist yet
+    res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(Net::HTTP::Delete.new(uri)) }
+    raise "DELETE #{template_path} returned #{res.code}: #{res.body}" unless res.is_a?(Net::HTTPSuccess) || res.code == "404"
   end
 
   # Fail unless the plugin installed the template and the index was created with its setting.
