@@ -91,8 +91,16 @@ bundle exec ruby -Itest test/plugin/test_out_mysql_replicator_elasticsearch.rb
 
 Mapping types were removed in Elasticsearch 8.x (and deprecated in 7.x), so the
 `_type` field can no longer be sent in bulk requests. The plugin detects the
-Elasticsearch version on the first write and automatically omits `_type` for
-7.x and later, so no extra configuration is required.
+Elasticsearch version with `GET /` on the first write and automatically omits
+`_type` for 7.x and later, so no extra configuration is required.
+
+If `GET /` fails with a connection error, a 429 or a 5xx (for example while
+Elasticsearch is starting), the write fails without sending the bulk request,
+and Fluentd retries the chunk, which detects the version again. Any other
+failure, such as 403 for a user without the `monitor` cluster privilege, is
+logged once as an error, and the plugin then sends `_type` (assuming 6.x) until
+a restart, which Elasticsearch 8.x and later reject. So give the user the
+`monitor` privilege.
 
 ## JSON column support
 
@@ -203,9 +211,9 @@ control a field's mapping — e.g. `keyword` for a non-analyzed field, or
 `geo_point`, which dynamic mapping never infers — install an **index template**
 so it is applied to indices *before* the first document is written.
 
-`mysql_replicator_elasticsearch` can install a template on startup. The option
-names mirror `fluent-plugin-elasticsearch` (the default here uses the modern
-composable API, whereas fluent-plugin-elasticsearch defaults to legacy):
+`mysql_replicator_elasticsearch` can install a template on the first write. The
+option names mirror `fluent-plugin-elasticsearch` (the default here uses the
+modern composable API, whereas fluent-plugin-elasticsearch defaults to legacy):
 
 ```
 <match replicator.**>
@@ -222,6 +230,19 @@ composable API, whereas fluent-plugin-elasticsearch defaults to legacy):
 **server-side rule**, so once installed it is applied automatically to every new
 index whose name matches its `index_patterns` — **including future date-rolled
 indices** (see *Date-based index names* above) — with no per-write work.
+
+The template is installed before the bulk request of the first write. If the
+template check or install fails with a connection error, a 429 or a 5xx, the
+write fails without sending the bulk request, so that no index is created with
+dynamic mapping before the template is in, and Fluentd retries the chunk, which
+tries the template again. While the template API keeps failing this way, nothing
+is written: the chunks wait in the buffer, and with a memory buffer (the
+default) and no `<secondary>`, Fluentd drops the chunks in the buffer queue when
+the retry limit is reached. Any other failure, such as 400 for a broken template
+file or 403, is logged once as an error, and the documents are written without
+the template until a restart. The composable template also needs the
+Elasticsearch version, so it is not installed if the version cannot be detected
+(see *Elasticsearch version compatibility*).
 
 Example `template_file` (composable format, the default) mapping a non-analyzed
 field as `keyword`, a coordinate field as `geo_point`, and a `DECIMAL` column as
