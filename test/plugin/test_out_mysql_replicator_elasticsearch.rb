@@ -645,6 +645,59 @@ class MysqlReplicatorElasticsearchOutput < Test::Unit::TestCase
     assert_equal([:put, :bulk, :bulk], requests)
   end
 
+  # Elasticsearch answers 200 to a bulk request even when some of its documents fail, and reports them in "items".
+  # The reason of an error can contain a part of the value of the field, so it is not logged.
+  def test_logs_documents_that_failed_in_a_bulk_request
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    body = {
+      'errors' => true,
+      'items' => [
+        {'index' => {'_index' => 'myindex', '_id' => '1', 'status' => 201}},
+        {'index' => {'_index' => 'myindex', '_id' => '2', 'status' => 400,
+                     'error' => {'type' => 'document_parsing_exception',
+                                 'reason' => "[1:8] failed to parse field [age] of type [integer] in document with id '2'. Preview of field's value: 'xyzzy'"}}},
+      ],
+    }
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(:status => 200, :headers => {"Content-Type" => "application/json"}, :body => JSON.generate(body))
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+      driver.feed(sample_record)
+    end
+    errors = driver.logs.grep(/\[error\]/)
+    assert_equal(1, errors.size, driver.logs.inspect)
+    assert_match(/1 of 2 documents failed in a bulk request: index=myindex status=400 type=document_parsing_exception$/, errors.first)
+    assert_empty(driver.logs.grep(/xyzzy|Preview/))
+  end
+
+  # A delete to an index that is not created yet answers 404 index_not_found_exception, and leaves nothing to delete.
+  def test_does_not_log_a_delete_that_found_no_index
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(:status => 200, :headers => {'Content-Type' => 'application/json'},
+      :body => '{"took":1,"errors":true,"items":[{"delete":{"_index":"users-20261104","_id":"1","status":404,"error":{"type":"index_not_found_exception","reason":"no such index [users-20261104]"}}}]}')
+    driver.run(default_tag: 'myindex.mytype.delete.id') { driver.feed(sample_record) }
+    assert_empty(log_lines('error'))
+  end
+
+  # Elasticsearch does not answer like this, but a malformed response is only logged, and the write succeeds, as its
+  # documents may have been written.
+  def test_warns_once_for_a_bulk_response_that_cannot_be_read
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(:status => 200, :headers => {'Content-Type' => 'application/json'},
+      :body => '{"took":1,"errors":true,"items":[{"delete":{"_index":"myindex","_id":"1","status":false}}]}')
+    driver.run(default_tag: 'myindex.mytype.delete.id') { driver.feed(sample_record) }
+    assert_equal(["could not read the bulk response: NoMethodError"], log_lines('warn').map {|l| l[/could not read.*/] }, driver.logs.inspect)
+    assert_empty(driver.logs.grep(/unrecoverable error|failed to flush|bad chunk/))
+  end
+
+  def test_does_not_log_errors_for_a_bulk_request_without_errors
+    stub_elastic_version("http://localhost:9200/", "8.18.0")
+    stub_request(:post, "http://localhost:9200/_bulk").to_return(:status => 200, :headers => {"Content-Type" => "application/json"}, :body => '{"errors":false,"items":[{"index":{"status":201}}]}')
+    driver.run(default_tag: @tag) do
+      driver.feed(sample_record)
+    end
+    assert_empty(driver.logs.grep(/\[error\]/))
+  end
+
   def test_template_name_without_file_raises
     assert_raise(Fluent::ConfigError) do
       driver.configure("template_name my_tmpl\n")

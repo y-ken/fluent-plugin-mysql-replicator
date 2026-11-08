@@ -148,7 +148,9 @@ jobs:
   # and is what most production users run today. v6 LTS bundles Fluentd v1.19.
   install-smoke-fluent-package:
     name: Install smoke (fluent-package v6 LTS)
-    runs-on: ubuntu-latest  # GitHub's ubuntu-latest is Ubuntu 24.04 (Noble)
+    # The install script below is for Ubuntu 24.04 (Noble). ubuntu-latest moves to
+    # Ubuntu 26.04 by 2026-11-19 (actions/runner-images#14748), so pin the runner.
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v5
