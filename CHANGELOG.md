@@ -86,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The install-smoke jobs load the output plugins too, so that a library that
   Fluentd stops bundling is caught, and the unit tests also run with json 2.21.x
   on Ruby 3.4. ([#61])
+- The E2E tests run on Elasticsearch 6.8, 7.17, 8.19 and 9.5, and check that the
+  plugin installs the index template. ([#86])
+- The fluent-package install-smoke job runs on Ubuntu 24.04, as the install
+  script is for that release only. ([#88])
 
 ## [1.4.0] - 2026-06-17
 
@@ -213,3 +217,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#63]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/63
 [#64]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/64
 [#65]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/65
+[#86]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/86
+[#88]: https://github.com/y-ken/fluent-plugin-mysql-replicator/pull/88
