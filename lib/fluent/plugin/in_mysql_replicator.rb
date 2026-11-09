@@ -9,6 +9,18 @@ module Fluent::Plugin
 
     helpers :thread
 
+    # prepared_query failed, or its connection could not be opened. It holds only the error number and the SQLSTATE: the
+    # message of MySQL can hold values of the rows.
+    class PreparedQueryError < StandardError
+      attr_reader :errno, :sql_state
+
+      def initialize(error)
+        @errno = error.respond_to?(:error_number) ? error.error_number : nil
+        @sql_state = error.respond_to?(:sql_state) ? error.sql_state : nil
+        super("prepared_query failed. :errno=>#{@errno} :sql_state=>#{@sql_state}")
+      end
+    end
+
     config_param :host, :string, :default => 'localhost'
     config_param :port, :integer, :default => 3306
     config_param :username, :string, :default => 'root'
@@ -62,8 +74,6 @@ module Fluent::Plugin
     def poll
       @table_hash = Hash.new
       @ids = Array.new
-      @con = get_connection()
-      @prepared_con = get_connection()
       loop do
         poll_once
         sleep @interval
@@ -77,11 +87,12 @@ module Fluent::Plugin
       start_time = Time.now
       previous_ids = @ids
       current_ids = Array.new
-      if !@prepared_query.nil?
-        @prepared_query.split(/;/).each do |query|
-          @prepared_con.query(query)
-        end
-      end
+      # Kept for a poll that prepared_query fails.
+      baseline = @table_hash.dup unless @prepared_query.nil?
+      # The nested queries run on this connection, so that they see the session that prepared_query sets up. It is a
+      # new session for each poll, as a session cannot create the same temporary table twice.
+      open_nested = @prepared_query.nil? ? method(:get_connection) : method(:open_prepared_connection)
+      @prepared_con = open_prepared_connection if !@prepared_query.nil?
       rows, @con = query(@query, @con)
       rows.each do |row|
         id = extract_id(row)
@@ -97,12 +108,11 @@ module Fluent::Plugin
         parse_json_columns!(row, @json_columns)
         row.select {|k, v| nested_query_value?(v) }.each do |k, v|
           row[k] = [] unless row[k].is_a?(Array)
-          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con)
+          nest_rows, @prepared_con = query(expand_placeholders(v, row), @prepared_con, &open_nested)
           nest_rows.each do |nest_row|
             nest_row.each {|k, v| nest_row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
             row[k] << nest_row
           end
-          @prepared_con.close
         end
         if !@table_hash.include?(id)
           tag = format_tag(@tag, {:event => :insert})
@@ -114,7 +124,6 @@ module Fluent::Plugin
         @table_hash[id] = current_hash
         rows_count += 1
       end
-      @con.close
       if skipped_count > 0
         log.error "mysql_replicator: skipped #{skipped_count} rows without the primary key. :tag=>#{tag} :primary_key=>#{@primary_key.join(',')}"
       end
@@ -131,11 +140,47 @@ module Fluent::Plugin
       end
       elapsed_time = sprintf("%0.02f", Time.now - start_time)
       log.info "mysql_replicator: finished execution :tag=>#{tag} :rows_count=>#{rows_count} :elapsed_time=>#{elapsed_time} sec"
+    rescue PreparedQueryError => e
+      # The poll is skipped: no deletes, and the ids and hashes of the previous poll stay, so that the next poll, on a new
+      # connection after the interval, compares with them. A row that this poll sent before prepared_query failed again
+      # (on a connection opened again in the middle of the poll) is sent again by the next poll.
+      @table_hash = baseline
+      log.error "mysql_replicator: prepared_query failed; skipped this poll. :tag=>#{@tag} :errno=>#{e.errno} :sql_state=>#{e.sql_state}"
+    ensure
+      @con.close if @con
+      @prepared_con.close if @prepared_con
+      @prepared_con = nil
     end
 
     # Replaces each ${column} in a nested query with the value of that column in the row.
     def expand_placeholders(query, row)
       query.gsub(/\$\{([^\}]+)\}/) { row[$1].to_s }
+    end
+
+    # Opens a connection and runs the statements of prepared_query on it. The results of a statement, such as a SELECT
+    # that sets a user variable or a CALL of a procedure that returns rows, are read out: the connection streams its
+    # results, and one left unread makes the next query on it fail. A failure to connect or of a statement, including a
+    # CALL that fails after its rows, closes the connection and raises PreparedQueryError, without waiting.
+    def open_prepared_connection
+      con = get_connection(true)
+      @prepared_query.to_s.split(/;/).map(&:strip).reject(&:empty?).each do |statement|
+        read_out_results(con, con.query(statement))
+      end
+      con
+    rescue Mysql2::Error => e
+      con.close if con
+      raise PreparedQueryError.new(e)
+    rescue Exception
+      con.close if con
+      raise
+    end
+
+    def read_out_results(con, result)
+      result.each {} if result
+      while con.next_result
+        more = con.store_result
+        more.each {} if more
+      end
     end
 
     def hash_delete_by_list (hash, deleted_keys)
@@ -198,19 +243,37 @@ module Fluent::Plugin
       router.emit(tag, Fluent::Engine.now, record)
     end
 
-    def query(query, con = nil)
+    # Runs a query, and returns its result and the connection it ran on. A connection that is lost is closed and opened
+    # again, with the block if one is given (for the session of prepared_query), and the query is tried again after a
+    # failure. A PreparedQueryError of the block is not tried again here: it skips the poll, which waits for the interval.
+    # A query that failed as its connection was lost is tried again at once on a new connection, the first time, so that
+    # a failure of prepared_query on that connection waits for the interval only once; after that, it waits.
+    def query(query, con = nil, &open)
+      open ||= method(:get_connection)
+      reopened = false
       begin
-        con = con.nil? ? get_connection : con
-        con = con.ping ? con : get_connection
+        if con.nil? || !con.ping
+          con.close if con
+          con = open.call
+        end
         return con.query(query), con
+      rescue PreparedQueryError
+        raise
       rescue Exception => e
+        if !reopened && con && !con.ping
+          reopened = true
+          retry
+        end
         log.warn "mysql_replicator: #{e}"
         sleep @interval
         retry
       end
     end
 
-    def get_connection
+    # A connection for the session of prepared_query (session is true) is not connected again by the client, which would
+    # lose the session without an error (ping connects again and returns true), and a failure to connect is raised
+    # instead of tried again.
+    def get_connection(session = false)
       begin
         return Mysql2::Client.new({
           :host => @host,
@@ -219,11 +282,12 @@ module Fluent::Plugin
           :password => @password,
           :database => @database,
           :encoding => @encoding,
-          :reconnect => true,
+          :reconnect => !session,
           :stream => true,
           :cache_rows => false
         })
       rescue Exception => e
+        raise if session
         log.warn "mysql_replicator: #{e}"
         sleep @interval
         retry
