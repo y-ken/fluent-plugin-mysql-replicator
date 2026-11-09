@@ -1,5 +1,6 @@
 require 'helper'
 require 'fluent/test/driver/input'
+require 'fake_mysql_client'
 
 class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
   def setup
@@ -26,6 +27,27 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_equal 'localhost', d.instance.manager_host
     assert_equal 3306, d.instance.manager_port
     assert_equal 'replicator_manager', d.instance.manager_database
+  end
+
+  # Returns the plugin instance with a fake manager database, whose queries are answered by the block.
+  def instance_with_manager(conf=CONFIG, &responder)
+    instance = create_driver(conf).instance
+    manager = FakeMysqlClient.new(&responder)
+    instance.define_singleton_method(:get_manager_connection) { manager }
+    [instance, manager]
+  end
+
+  # A poller can add to the hash table buffer before the flusher thread has run at all.
+  def test_hash_table_buffer_is_ready_before_any_thread_runs
+    instance, _ = instance_with_manager { [] }
+    instance.define_singleton_method(:thread_create) {|*_args, &_block| Thread.new {} }
+    instance.start
+    begin
+      assert_nothing_raised { instance.add_hash_table_buffer('setting', 1, 'hash') }
+    ensure
+      instance.stop
+      instance.shutdown
+    end
   end
 
   # The message of a MySQL error can hold values of the rows.
