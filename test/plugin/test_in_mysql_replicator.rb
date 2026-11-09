@@ -1,5 +1,7 @@
 require 'helper'
 require 'fluent/test/driver/input'
+require 'fake_mysql_client'
+require 'timeout'
 
 class MysqlReplicatorInputTest < Test::Unit::TestCase
   def setup
@@ -162,5 +164,43 @@ class MysqlReplicatorInputTest < Test::Unit::TestCase
 
   def test_extract_id_returns_composite_values
     assert_equal [10, 7], composite_driver.instance.extract_id({'tenant_id' => 10, 'id' => 7, 'text' => 'x'})
+  end
+
+  # --- polling, with fake MySQL connections ---
+
+  # Returns the plugin instance, the events it emits as [tag, record], and the fake connections it opens. Each
+  # connection answers a query with the block, which receives the SQL.
+  def polling_instance(conf, &responder)
+    instance = create_driver(conf).instance
+    events = []
+    clients = []
+    instance.define_singleton_method(:get_connection) { FakeMysqlClient.new(&responder).tap {|c| clients << c } }
+    instance.define_singleton_method(:emit_record) {|tag, record| events << [tag, record] }
+    instance.instance_variable_set(:@table_hash, {})
+    instance.instance_variable_set(:@ids, [])
+    [instance, events, clients]
+  end
+
+  # query() retries a failed SQL forever, so a poll that goes wrong would hang the test.
+  def poll_once(instance)
+    Timeout.timeout(10) { instance.poll_once }
+  end
+
+  NESTED_CONFIG = %[
+    tag   input.mysql.${event}.${primary_key}
+    query SELECT id, "SELECT name FROM item WHERE parent_id = ${id}" AS items FROM parent
+  ]
+
+  def test_nested_query_gets_the_value_of_its_placeholder
+    instance, events, clients = polling_instance(NESTED_CONFIG) do |sql|
+      case sql
+      when /FROM parent/ then [{'id' => 7, 'items' => 'SELECT name FROM item WHERE parent_id = ${id}'}]
+      when /FROM item WHERE parent_id = 7\z/ then [{'name' => 'a'}, {'name' => 'b'}]
+      else raise Mysql2::Error, "unexpected query: #{sql}"
+      end
+    end
+    poll_once(instance)
+    assert_equal([['input.mysql.insert.id', {'id' => 7, 'items' => [{'name' => 'a'}, {'name' => 'b'}]}]], events)
+    assert_equal(['SELECT name FROM item WHERE parent_id = 7'], clients.flat_map(&:queries).grep(/\ASELECT name/))
   end
 end
