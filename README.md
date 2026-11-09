@@ -278,6 +278,81 @@ The backup directory is `backup/` under the `root_dir` of `<system>`, or under
 same. With `disable_chunk_backup true` in `<buffer>`, the chunk is thrown away
 instead.
 
+## Documents that fail in a bulk request
+
+Elasticsearch answers a bulk request with 200 even when some of its documents
+fail, and reports them per document. The Elasticsearch output logs them (the
+index, the status and the type of the error, without the values).
+
+When a document fails with 429 (for example, a full write queue, or an index
+blocked by the disk flood-stage watermark) or a 5xx, the output writes the whole
+chunk again, with the retry and backoff of `<buffer>`. Each action has the `_id`
+of its primary key and the actions keep their order, so writing the chunk again
+leaves the same documents. A document that fails with another 4xx, such as a
+mapping error, is only logged.
+
+* While a chunk is written again, the chunks after it wait, including those for
+  other indices. If an index keeps failing with 429 or 5xx, writing stops for all
+  the indices of that output until `retry_timeout` (72 hours by default) or
+  `retry_max_times`, and then Fluentd drops every chunk of its queue. Configure
+  `<secondary>` to keep them (see below), and watch the log for "writing the
+  chunk again".
+* A chunk with a document that has no `_id` (its primary key is missing or NULL)
+  is not written again, as Elasticsearch would add another copy of that document
+  on each try. A warning says so.
+* Chunks keep their order only with one flush thread (`flush_thread_count 1`, the
+  default).
+
+### Keeping the chunks that cannot be written
+
+Fluentd moves a chunk to the backup directory only on an unrecoverable error,
+such as a tag that does not match `tag_format`. A chunk that keeps failing with
+429 or 5xx is retried, and when the retries run out, Fluentd logs "Hit limit for
+retries. dropping all chunks in the buffer queue." and drops it with every other
+chunk of the queue. With `<secondary>`, Fluentd writes such a chunk there instead,
+before the retries run out (after `retry_secondary_threshold`, 80% of
+`retry_timeout` or of `retry_max_times`), and goes on with the next chunk:
+
+```
+<match users.*.*>
+  @type mysql_replicator_elasticsearch
+  @id es_out
+  host localhost
+  port 9200
+  <buffer>
+    @type file
+    path /var/log/fluent/buffer/es_out
+    # or retry_timeout 1h
+    retry_max_times 10
+  </buffer>
+  <secondary>
+    @type secondary_file
+    directory /var/log/fluent/failed/es_out
+    basename failed.${chunk_id}
+  </secondary>
+</match>
+```
+
+With `retry_max_times 2`, for example, the chunk is written to the primary twice,
+and then to a file such as `/var/log/fluent/failed/es_out/failed.65f6d6eaa7a8b280badcf01904593cea.0`,
+with the log line "retry succeeded by secondary." The file holds the whole chunk,
+including the documents of other indices that were written: putting it back in
+writes them again, which leaves the same documents, as they have their `_id`.
+
+Each record in the file is `[tag, time, record]` in MessagePack, as in a backup
+file, so it is put back in the same way, by sending it to a `forward` source once
+Elasticsearch accepts the documents again:
+
+```
+ruby -rsocket -e 'TCPSocket.open("localhost", 24224) {|s| IO.copy_stream(ARGV[0], s) }' /var/log/fluent/failed/es_out/failed.65f6d6eaa7a8b280badcf01904593cea.0
+```
+
+Move the file away once its records are written (see "A tag that does not match
+`tag_format`" above for the `forward` source).
+
+The chunks are not sent to `@ERROR` instead: without a `<label @ERROR>`, Fluentd
+writes each error event, with the values of the record, to its log.
+
 ## Output example
 
 An example of detecting insert/update/delete events.

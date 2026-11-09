@@ -92,6 +92,7 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
 
     bulk_message = []
     utf8 = Utf8Converter.new
+    without_id = 0
     # The number of rows skipped for a primary key that is not valid UTF-8, by index.
     skipped = Hash.new(0)
 
@@ -125,6 +126,8 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
             next
           end
           action['_id'] = id
+        else
+          without_id += 1
         end
         meta = { "index" => utf8.convert(action) }
         bulk_message << JSON.generate(meta)
@@ -152,8 +155,12 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
     request.body = bulk_message.join("\n")
     response = new_http.request(request)
     response.value
-    log_bulk_errors(response.body)
+    failed = log_bulk_errors(response.body)
+    raise_retriable_bulk_errors(failed, without_id)
   end
+
+  # Raised when documents of a bulk request failed with 429 or 5xx, so that Fluentd writes the chunk again.
+  class RetriableBulkError < StandardError; end
 
   private
 
@@ -186,25 +193,46 @@ class Fluent::Plugin::MysqlReplicatorElasticsearchOutput < Fluent::Plugin::Outpu
   # Elasticsearch answers 200 to a bulk request even when some of its documents fail, for example on a mapping
   # error, and reports them per document in "items". Log them, so that they are not lost silently. Only the index, the
   # status and the type of the error are logged: the reason of the error can contain a part of the value of a field
-  # ("Preview of field's value"), and the _id can be built from the values of the primary key.
+  # ("Preview of field's value"), and the _id can be built from the values of the primary key. Returns the failed items.
   def log_bulk_errors(body)
     # Most responses have no errors, and a response has an item per document, so it is parsed only when it has some.
-    return unless body.to_s.include?('"errors":true')
+    return [] unless body.to_s.include?('"errors":true')
     result = JSON.parse(body)
-    return unless result.is_a?(Hash) && result['errors']
+    return [] unless result.is_a?(Hash) && result['errors']
     items = Array(result['items']).select {|item| item.is_a?(Hash) && item.values.first.is_a?(Hash) }
     # A delete that answers 404 found nothing to delete, such as a delete to an index that is not created yet (an index
     # per day, for example), which leaves the same result as a delete that succeeded.
     failed = items.reject {|item| item.keys.first == 'delete' && item.values.first['status'].to_i == 404 }
                   .map {|item| item.values.first }.select {|item| item['error'] }
-    return if failed.empty?
+    return [] if failed.empty?
     examples = failed.first(5).map do |item|
       error = item['error']
       "index=#{item['_index']} status=#{item['status']} type=#{error.is_a?(Hash) ? error['type'] : 'unknown'}"
     end
     log.error "mysql_replicator_elasticsearch: #{failed.size} of #{items.size} documents failed in a bulk request: #{examples.join(', ')}"
+    failed
   rescue StandardError => e
     log.warn "mysql_replicator_elasticsearch: could not read the bulk response: #{e.class}"
+    []
+  end
+
+  # A document that failed with 429 (too many requests, such as a full write queue) or 5xx can succeed later, so the
+  # whole chunk is written again, with Fluentd's retry and backoff. Writing the other documents again is safe: each
+  # action has the same _id (index replaces the document, delete removes it again) and they are sent in the same
+  # order, so the result is the same, and a later chunk is not written before this one, as Fluentd puts the chunk
+  # back at the head of the queue and waits (with one flush thread, which is the default). A document that failed
+  # with another 4xx, such as a mapping error, fails the same way again, so it alone does not make the chunk retried.
+  # A document without an _id (its primary key is missing or NULL) gets a new one from Elasticsearch each time it is
+  # written, so a chunk with one is not written again: that would add a copy of it for each try.
+  def raise_retriable_bulk_errors(failed, without_id = 0)
+    retriable = failed.map {|item| item['status'].to_i }.select {|status| status == 429 || status >= 500 }
+    return if retriable.empty?
+    statuses = retriable.tally.sort.map {|status, n| "#{status} x#{n}" }.join(', ')
+    if without_id > 0
+      log.warn "mysql_replicator_elasticsearch: #{retriable.size} documents failed with a status that can succeed later (#{statuses}), but the chunk is not written again, as #{without_id} documents in it have no _id and would be written again as new documents"
+      return
+    end
+    raise RetriableBulkError, "mysql_replicator_elasticsearch: #{retriable.size} documents failed with a status that can succeed later (#{statuses}); writing the chunk again"
   end
 
   # Converts the strings of a record to UTF-8 before JSON.generate. mysql2 gives BLOB and BINARY columns as ASCII-8BIT
