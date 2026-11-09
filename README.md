@@ -195,6 +195,38 @@ Here every `posts` row gets a `comments` array built from the sub-query.
 Only values matching `SELECT ... ${...}` are treated as sub-queries, so ordinary
 text columns that merely begin with the word "SELECT" are left untouched.
 
+How a value is put into the sub-query depends on where its placeholder is:
+
+* Inside a quoted string, such as `WHERE owner = '${name}'` or
+  `WHERE title LIKE '%${name}%'`, the value is escaped for that string with the
+  escape of the connection that runs the sub-query (`mysql_real_escape_string`,
+  which follows its character set and the `NO_BACKSLASH_ESCAPES` of its
+  `sql_mode`). A quote or a backslash in the value does not end the string, and
+  with `=` the value is matched as it is. With `LIKE`, `%`, `_` and `\` in the
+  value keep their meaning in the pattern. Quote the placeholder of a string
+  column.
+* Outside quotes, such as `WHERE post_id = ${id}` or `WHERE ${cond}`, the value is
+  put in as it is, so that a column can hold a number or a part of the SQL (for
+  example `owner = 'alice'` in `cond`). The value is then SQL: use this only for
+  columns whose values you control. A placeholder in a comment (`/* */`, `-- ` or
+  `#`) is put in as it is too, and a quote in a comment does not start a string.
+
+Before 1.4.2, the values were put in as they were, even inside quotes. If a query
+escapes a value itself so that it can be quoted, such as
+`REPLACE(name, '''', '''''') AS name_q` for `'${name_q}'`, remove that escape when
+you upgrade: the value would be escaped twice and match nothing, and the rows would
+be sent with an empty sub-query result. Likewise, a backslash in a quoted value is
+now matched as it is, where MySQL read it as an escape before.
+
+A sub-query that fails with an error in its SQL, such as a syntax error or an
+unknown column, would fail the same way on every try, so it is not retried. The
+row is held back for that poll: it is not sent, and it is not taken as deleted, so
+that it is sent once its sub-query works. One error line for each poll gives the
+column, the MySQL error number and the number of rows held back, without the
+values. A sub-query that fails for another reason, such as a lost connection, is
+handled as before: `mysql_replicator` tries it again after `interval`, and
+`mysql_replicator_multi` fails the poll (and tries again with `enable_retry`).
+
 ## Index templates (mappings)
 
 By default Elasticsearch infers field types from the first document (dynamic
