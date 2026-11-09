@@ -13,7 +13,8 @@
 # index template and that the new index gets the template's setting.
 #
 # Delete detection in the multi plugin is gap-based against hash_tables, so the
-# test seeds three rows and deletes the *middle* one (id=2) to exercise it.
+# test seeds three rows and deletes the *middle* one (id=2), then the *first*
+# one (id=1), to exercise it.
 require_relative 'e2e_helper'
 include E2E
 
@@ -139,6 +140,27 @@ begin
   code3, = es_get(INDEX, TYPE, 3)
   fail_with("surviving rows were unexpectedly removed (id1=#{code1}, id3=#{code3})", LOG_PATH) unless code1 == 200 && code3 == 200
   step "  DELETE OK"
+
+  # --- 8. DELETE of the first row (id=1) is replicated ------------------------
+  # The first row of a poll is compared with the rows of hash_tables before it.
+  # Two rows must remain after it: with one, it is also the last row.
+  step "asserting DELETE replication (first id=1)"
+  client.query("INSERT INTO `#{SOURCE_DB}`.users (id, name, age) VALUES (4, 'dave', 50)")
+  wait_until("user 4 recorded in hash_tables", log_path: LOG_PATH) do
+    hash_table_count(client, pk: 4) == 1
+  end
+  client.query("DELETE FROM `#{SOURCE_DB}`.users WHERE id = 1")
+  wait_until("user 1 removed from Elasticsearch", log_path: LOG_PATH) do
+    code, _ = es_get(INDEX, TYPE, 1)
+    code == 404
+  end
+  wait_until("hash_tables entry for id=1 removed", log_path: LOG_PATH) do
+    hash_table_count(client, pk: 1) == 0
+  end
+  code3, = es_get(INDEX, TYPE, 3)
+  code4, = es_get(INDEX, TYPE, 4)
+  fail_with("surviving rows were unexpectedly removed (id3=#{code3}, id4=#{code4})", LOG_PATH) unless code3 == 200 && code4 == 200
+  step "  DELETE of the first row OK"
 
   puts "\n[E2E] PASSED (multi): insert/update/delete replicated and hash_tables maintained"
 ensure

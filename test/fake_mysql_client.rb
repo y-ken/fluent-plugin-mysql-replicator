@@ -22,8 +22,11 @@ class FakeMysqlClient
       raise Mysql2::Error, "Table '#{table}' already exists" if @queries.any? {|q| q =~ /\ACREATE TEMPORARY TABLE #{table}\b/i }
     end
     @queries << sql
-    rows = (@responder.call(sql) || []).map(&:dup)
-    return rows unless rows.is_a?(Array) && sql =~ /\A\s*SELECT/i
+    rows = @responder.call(sql) || []
+    # An Enumerator is passed as it is, so that a test can fail in the middle of a streamed result.
+    return rows unless rows.is_a?(Array)
+    rows = rows.map(&:dup)
+    return rows unless sql =~ /\A\s*SELECT/i
     @unread = FakeResult.new(rows) { @unread = nil }
   end
 
