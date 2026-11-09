@@ -96,10 +96,13 @@ module Fluent::Plugin
         primary_key = config['primary_key']
         json_columns = (config['json_columns'] || '').split(',').map(&:strip).reject(&:empty?)
         while @running
-          # Each poll compares its rows with each other and with hash_tables only. A previous_id carried over from the
-          # last row of the previous poll hid the deletes before the first row, and after a failed poll it made the
-          # rows after the failure look deleted.
-          previous_id = current_id = nil
+          # Deletes are the ids of hash_tables that this poll did not return, found at its end. They do not depend on
+          # the order of the rows. The ids of the poll are kept in memory until then, as ranges of consecutive ids.
+          seen_ids = SeenIds.new
+          # Whether the rows came in ascending order of the primary key, which tells the deletes of a failed poll.
+          ascending = true
+          last_id = nil
+          failed = false
           rows_count = 0
           skipped_count = 0
           failed_nested_queries = Hash.new(0)
@@ -126,8 +129,7 @@ module Fluent::Plugin
             end
             db = get_origin_connection(config)
             db.query(config['query']).each do |row|
-              # A row without its primary key cannot be tracked, so it is skipped. previous_id stays at the row
-              # before it, so a row deleted next to it is still detected.
+              # A row without its primary key cannot be tracked, so it is skipped.
               if row[primary_key].nil?
                 skipped_count += 1
                 next
@@ -151,18 +153,15 @@ module Fluent::Plugin
                 held_back = true
               end
               current_id = row[primary_key]
-              @mutex.synchronize {
-                detect_insert_update(config, row) unless held_back
-                detect_delete(config, current_id, previous_id)
-              }
-              previous_id = current_id
+              @mutex.synchronize { detect_insert_update(config, row) } unless held_back
+              seen_ids << current_id
+              ascending = false if last_id && current_id < last_id
+              last_id = current_id
               rows_count += 1
             end
-            # The rows after the last one. Not on an empty result, which is not taken as "every row was deleted".
-            @mutex.synchronize { detect_delete(config, nil, previous_id) } unless previous_id.nil?
           rescue PreparedSessionLost => e
-            # The rest of the poll is skipped, as when prepared_query fails: no deletes after the last row seen. The next
-            # poll starts its comparison again from its own first row.
+            # The rest of the poll is skipped, as when prepared_query fails, and it has no deletes: the ids after the last
+            # row seen were not read.
             db.close if db
             nest_db.close
             @mutex.synchronize {
@@ -178,11 +177,19 @@ module Fluent::Plugin
               log.error "error: #{e.message}"
               log.error e.backtrace.join("\n")
             }
-            sleep config['retry_interval']
+            failed = true
           ensure
             db.close if db
             nest_db.close if nest_db && !config['prepared_query'].nil?
           end
+          # An empty result is not taken as "every row was deleted". After a failure (with enable_retry), the rows after
+          # the failure were not seen, so only the ids up to the last row seen are compared, and only when the rows came
+          # in ascending order; a setting that fails at the same row on every poll then still replicates the deletes
+          # before it. Rows in another order give no deletes in a failed poll.
+          if config['enable_delete'] == 1 && !seen_ids.empty? && (!failed || ascending)
+            emit_deletes_safely(config, seen_ids, failed ? last_id : nil)
+          end
+          sleep config['retry_interval'] if failed
           if skipped_count > 0
             @mutex.synchronize {
               log.error "mysql_replicator_multi: skipped #{skipped_count} rows without the primary key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
@@ -245,46 +252,86 @@ module Fluent::Plugin
       return row.nil? ? "" : row['setting_query_hash']
     end
 
-    # Detects the rows deleted between previous_id and current_id, the rows of hash_tables before the first row when
-    # previous_id is nil, and those after the last row when current_id is nil. The query must return its rows in
-    # ascending order of the primary key.
-    def detect_delete(config, current_id, previous_id)
-      return if config['enable_delete'] != 1
-      deleted_ids = collect_gap_ids(config, current_id, previous_id)
-      unless deleted_ids.empty?
-        event = :delete
-        deleted_ids.each do |id|
-          tag = format_tag(@tag, {:name => config['name'], :event => event, :primary_key => config['primary_key']})
-          emit_record(tag, {config['primary_key'] => id})
+    # Sends the ids of hash_tables that are not in seen_ids (up to upto, if given) as deleted, and removes them from
+    # hash_tables. A failure of the manager database is logged, and the poller goes on: the ids stay in hash_tables,
+    # so they are found and sent again on the next poll.
+    def emit_deletes_safely(config, seen_ids, upto = nil)
+      deleted_ids = collect_deleted_ids(config, seen_ids, upto)
+      @mutex.synchronize { emit_deletes(config, deleted_ids) }
+    rescue StandardError => e
+      @mutex.synchronize {
+        log.error "mysql_replicator_multi: failed to detect or remove the deleted rows in hash_tables. :setting_name=>#{config['name']}"
+        log.error "error: #{e.message}"
+      }
+    end
+
+    # Returns the ids of the setting in hash_tables that are not in seen_ids, with one query. It is read on a
+    # connection of its own, as a stream, so that the other pollers, which share @manager_db under @mutex, do not wait
+    # for it, and the ids are not all held in memory at once.
+    def collect_deleted_ids(config, seen_ids, upto = nil)
+      seen_ids.finish
+      query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables WHERE setting_name = '#{config['name']}'"
+      query += " AND setting_query_pk <= #{upto.to_i}" if upto
+      deleted_ids = []
+      manager_db = get_manager_connection
+      manager_db.query(query, :stream => true).each do |row|
+        id = row['setting_query_pk']
+        deleted_ids << id unless seen_ids.include?(id)
+      end
+      deleted_ids
+    ensure
+      manager_db.close if manager_db
+    end
+
+    # The primary keys that a poll returned. The ids that come in ascending order are kept as ranges of consecutive
+    # ids, so that a query on an AUTO_INCREMENT key with ORDER BY takes memory for each gap rather than for each row.
+    # The ids that come after a larger one are kept one by one, 8 bytes each, and sorted at the end (which takes a copy
+    # of them for a moment).
+    class SeenIds
+      def initialize
+        @starts = []
+        @ends = []
+        @others = []
+      end
+
+      def <<(id)
+        id = id.to_i
+        last = @ends.last
+        if last.nil? || id > last + 1
+          @starts << id
+          @ends << id
+        elsif id == last + 1
+          @ends[-1] = id
+        elsif id < @starts.last
+          @others << id
         end
-        update_hashtable({:event =>  event, :ids => deleted_ids, :setting_name => config['name']})
+        self
+      end
+
+      def empty?
+        @starts.empty?
+      end
+
+      def finish
+        @others.sort!
+      end
+
+      def include?(id)
+        i = @starts.bsearch_index {|start| start > id }
+        i = i.nil? ? @starts.size - 1 : i - 1
+        return true if i >= 0 && id <= @ends[i]
+        @others.bsearch {|other| other >= id } == id
       end
     end
 
-    def collect_gap_ids(config, current_id, previous_id)
-      setting_name = config['name']
-      if previous_id.nil?
-        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}'
-          AND setting_query_pk < #{current_id.to_i}"
-      elsif current_id.nil?
-        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}'
-          AND setting_query_pk > #{previous_id.to_i}"
-      elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 0
-        query = "SELECT SQL_NO_CACHE setting_query_pk FROM hash_tables
-          WHERE setting_name = '#{setting_name}'
-          AND setting_query_pk > #{previous_id.to_i} AND setting_query_pk < #{current_id.to_i}"
-      elsif (current_id - previous_id) > 1 && config['enable_loose_delete'] == 1
-        return [*previous_id...current_id] - [current_id,previous_id]
+    def emit_deletes(config, deleted_ids)
+      return if deleted_ids.empty?
+      event = :delete
+      deleted_ids.each do |id|
+        tag = format_tag(@tag, {:name => config['name'], :event => event, :primary_key => config['primary_key']})
+        emit_record(tag, {config['primary_key'] => id})
       end
-      ids = Array.new
-      unless query.nil?
-        @manager_db.query(query).each do |row|
-          ids << row['setting_query_pk']
-        end
-      end
-      return ids
+      update_hashtable({:event =>  event, :ids => deleted_ids, :setting_name => config['name']})
     end
 
     def update_hashtable(opts)
