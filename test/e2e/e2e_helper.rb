@@ -49,6 +49,35 @@ module E2E
     # ignore: the index may not exist yet
   end
 
+  # The index template that fluent_single.conf and fluent_multi.conf install. It sets number_of_replicas to 0, where
+  # the default is 1, for both test indices. Elasticsearch 6.x has only the legacy API (/_template), and 7.17 and
+  # later get the composable one (/_index_template).
+  TEMPLATE_NAME = 'mysql_replicator_e2e'
+
+  def template_path
+    es_major_version < 7 ? "/_template/#{TEMPLATE_NAME}" : "/_index_template/#{TEMPLATE_NAME}"
+  end
+
+  # Drop the template so that the plugin installs it again. A template that does not exist yet answers 404.
+  def es_delete_template
+    uri = URI("#{es_base}#{template_path}")
+    res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(Net::HTTP::Delete.new(uri)) }
+    raise "DELETE #{template_path} returned #{res.code}: #{res.body}" unless res.is_a?(Net::HTTPSuccess) || res.code == "404"
+  end
+
+  # Fail unless the plugin installed the template and the index was created with its setting.
+  def assert_template_applied(index, log_path)
+    res = Net::HTTP.get_response(URI("#{es_base}#{template_path}"))
+    fail_with("GET #{template_path} returned #{res.code}: #{res.body}", log_path) unless res.code == '200'
+    body = JSON.parse(res.body)
+    names = es_major_version < 7 ? body.keys : body.fetch('index_templates', []).map { |t| t['name'] }
+    fail_with("template #{TEMPLATE_NAME} not in GET #{template_path}: #{res.body}", log_path) unless names.include?(TEMPLATE_NAME)
+
+    res = Net::HTTP.get_response(URI("#{es_base}/#{index}/_settings"))
+    replicas = (JSON.parse(res.body) rescue {}).dig(index, 'settings', 'index', 'number_of_replicas')
+    fail_with("index #{index} has number_of_replicas #{replicas.inspect}, not \"0\" from the template: #{res.body}", log_path) unless replicas == '0'
+  end
+
   # Poll a condition until it becomes truthy, otherwise fail with a timeout.
   def wait_until(description, timeout: 90, log_path: nil)
     deadline = Time.now + timeout

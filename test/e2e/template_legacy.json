@@ -1,0 +1,6 @@
+{
+  "index_patterns": ["myindex", "multiindex"],
+  "settings": {
+    "index.number_of_replicas": 0
+  }
+}
