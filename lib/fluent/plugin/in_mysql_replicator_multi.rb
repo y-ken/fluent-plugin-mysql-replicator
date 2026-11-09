@@ -233,12 +233,18 @@ module Fluent::Plugin
       primary_key = config['primary_key']
       current_id = row[primary_key]
       stored_hash = config['enable_loose_insert'] == 1 ? "" : get_stored_hash(config['name'], current_id)
-      current_hash = Digest::SHA1.hexdigest(row.flatten.join)
+      current_hash = row_hash(row)
 
       event = nil
       if stored_hash.empty?
         event = :insert
       elsif stored_hash != current_hash
+        if stored_hash == legacy_row_hash(row)
+          # A hash stored by 1.4.x or earlier, of a row that did not change since: it is replaced with the new hash
+          # without sending the row, so that an upgrade does not send every row as an update once.
+          update_hashtable({:event => :update, :id => current_id, :setting_name => config['name'], :hash => current_hash})
+          return
+        end
         event = :update
       end
       unless event.nil?
@@ -246,6 +252,17 @@ module Fluent::Plugin
         emit_record(tag, row)
         update_hashtable({:event => event, :id => current_id, :setting_name => config['name'], :hash => current_hash})
       end
+    end
+
+    # The hash that tells whether a row changed, as in mysql_replicator: from Marshal, which tells nil from "" and keeps
+    # the column boundaries.
+    def row_hash(row)
+      Digest::SHA1.hexdigest(Marshal.dump(row))
+    end
+
+    # The hash of 1.4.x and earlier, which missed a change from NULL to "" and changes across column boundaries.
+    def legacy_row_hash(row)
+      Digest::SHA1.hexdigest(row.flatten.join)
     end
 
     def get_stored_hash(setting_name, id)
