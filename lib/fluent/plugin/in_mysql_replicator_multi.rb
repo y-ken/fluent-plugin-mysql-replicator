@@ -100,6 +100,7 @@ module Fluent::Plugin
         while @running
           previous_id_at_start = previous_id
           rows_count = 0
+          skipped_count = 0
           start_time = Time.now
           db = nil
           nest_db = nil
@@ -123,6 +124,12 @@ module Fluent::Plugin
             end
             db = get_origin_connection(config)
             db.query(config['query']).each do |row|
+              # A row without its primary key cannot be tracked, so it is skipped. previous_id stays at the row
+              # before it, so a row deleted next to it is still detected.
+              if row[primary_key].nil?
+                skipped_count += 1
+                next
+              end
               row.each {|k, v| row[k] = v.to_s if v.is_a?(Time) || v.is_a?(Date) || v.is_a?(BigDecimal)}
               parse_json_columns!(row, json_columns)
               row.select {|k, v| v.to_s.strip.match(/^SELECT[^\$]+\$\{[^\}]+\}/i) }.each do |k, v|
@@ -134,10 +141,6 @@ module Fluent::Plugin
               end
               current_id = row[primary_key]
               @mutex.synchronize {
-                if row[primary_key].nil?
-                  log.error "mysql_replicator_multi: missing primary_key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
-                  break
-                end
                 detect_insert_update(config, row)
                 detect_delete(config, current_id, previous_id)
               }
@@ -170,6 +173,11 @@ module Fluent::Plugin
           ensure
             db.close if db
             nest_db.close if nest_db && !config['prepared_query'].nil?
+          end
+          if skipped_count > 0
+            @mutex.synchronize {
+              log.error "mysql_replicator_multi: skipped #{skipped_count} rows without the primary key. :setting_name=>#{config['name']} :primary_key=>#{primary_key}"
+            }
           end
           elapsed_time = sprintf("%0.02f", Time.now - start_time)
           @mutex.synchronize {
