@@ -213,6 +213,21 @@ class MysqlReplicatorMultiInputTest < Test::Unit::TestCase
     assert_equal(1, logs('error').grep(/failed to detect or remove the deleted rows/).size)
   end
 
+  # One DELETE for a large number of ids could be larger than max_allowed_packet.
+  def test_many_deletes_are_written_in_batches
+    hash_tables = FakeHashTables.new
+    statements = []
+    hash_tables.define_singleton_method(:call) do |sql|
+      statements << sql if sql.start_with?('DELETE')
+      super(sql)
+    end
+    ids = (1..1500).to_a
+    _, second = run_polls(setting, users(*ids), users(1), hash_tables: hash_tables)
+    assert_equal(1499, deletes(second).size)
+    assert_equal([1000, 499], statements.map {|sql| sql[/IN\(([^)]*)\)/, 1].split(',').size })
+    assert_equal([['users', 1]], hash_tables.rows.keys)
+  end
+
   # A LEFT JOIN, for example, can give a row whose primary key is NULL. It is skipped, and the rows around it are
   # still compared with each other, so a row deleted next to it is detected.
   def test_row_with_null_primary_key_is_skipped_and_deletes_around_it_are_detected
